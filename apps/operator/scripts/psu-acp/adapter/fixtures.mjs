@@ -41,7 +41,8 @@ createServer(async (req,res) => {
       });
       return send(result[0],{reply:result[1]});
     }
-    appendFileSync('/work/operator-events.jsonl', JSON.stringify({route:req.url?.split('?')[0], adv:p.advSessionId, role:p.su_role,stack:p.stack})+'\n');
+    appendFileSync('/work/operator-events.jsonl', JSON.stringify({route:req.url?.split('?')[0], adv:p.advSessionId, role:p.su_role,stack:p.stack,
+      planRef:p.plan_ref,argv:p.launch_argv})+'\n');
     if (req.url === prefix) {
       if (p.su_role?.includes('unresolved') || p.stack?.some(s=>s.includes('unresolved'))) return send(400,{error:'Unresolved identity '+[p.su_role,...(p.stack||[])].join(' ')});
       const adv=++serial;

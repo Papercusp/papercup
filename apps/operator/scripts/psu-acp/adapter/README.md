@@ -25,6 +25,8 @@ Set `operatorUrl`, `tokenFile`, and `workspace` in that file. Use the actual lis
 
 The package contains `client.json` with one `agent_servers` entry. Set its command to the absolute installed path, typically `/home/USER/.local/node_modules/.bin/psu-acp`, and replace its config argument with the absolute path above. The client launches the command in its chosen worktree and provides its normal Claude environment. Machine-wide managed settings must allow the launch-supplied `papercusp-su` MCP server and any caller servers. The operator URL must be loopback. Stdio carries newline-delimited ACP JSON-RPC. Diagnostic output goes to stderr.
 
+A client may set `_meta.psuAcp` on `session/new`. `role` and `stack` choose the session's identity in place of the configured defaults. `planRef` names the outside plan item the session works on: an opaque string the operator binds to the session, so no Papercusp plan is written for that work. `compactionLimit` is the session's context limit in tokens, a positive integer the operator clamps to what the role allows. Both last for the session, across resume. A fleet member takes them from its launch, never from the client.
+
 ## Compatibility and verification
 
 The paired client is Python `agent-client-protocol==0.12.1` in unstable mode. The pinned reference is `@agentclientprotocol/claude-agent-acp@0.88.0`, SDK `0.3.293`, native Claude `2.1.293`. No Papercusp hook is installed by the command. The optional managed test hook records Bash and Agent PreToolUse when the fixture trace variable is set. Removing it removes this recording. Client permission, tool and cancellation handling use structured native messages.

@@ -82,10 +82,20 @@ export class Operator {
     const launchArgv = ['psu-acp'];
     if (member) launchArgv.push('--headless', '--launched-by=' + this.member.owner,
       '--model=' + modelSpec, '--carry=' + (member.carry || 'warm'), '--account=' + (member.account || 'default'));
+    // A client names its outside plan item and context limit per session; a member carries
+    // the ones its launch was given. The operator validates the reference and clamps the limit.
+    const supplied = member || params._meta?.psuAcp || {};
+    const planRef = supplied.planRef ?? null;
+    if (planRef !== null && typeof planRef !== 'string') throw new Error('planRef must be a string');
+    const limit = supplied.compactionLimit ?? null;
+    if (limit !== null) {
+      if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('compactionLimit must be a positive integer');
+      launchArgv.push('--compaction-limit=' + limit);
+    }
     const boot = await this.post('', { workspace: this.config.workspace, harness_slug: member?.harness || this.config.harness || null,
       agent: 'claude', cwd, cwd_policy: 'caller', su_role: identity.role, stack: identity.stack,
       bootstrap_idempotency_key: randomUUID(), launch_argv: launchArgv,
-      model: modelSpec,
+      model: modelSpec, ...(planRef !== null ? {plan_ref: planRef} : {}),
       ...(member ? {headless:true,owner_id:member.ownerId,launched_by:this.member.owner,fleet:member.fleetSlug,
         fleet_role:member.fleetRole || 'member',launch_context:member.launchContext,carry:member.carry,
         plan:member.plan,profile:member.profile,account:member.account,feature:member.feature} : {}) });

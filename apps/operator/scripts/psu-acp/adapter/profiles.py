@@ -221,8 +221,12 @@ async def extended(c):
 
     async def identity():
         async with c.connection() as a:
-            await c.opened(a,psuAcp={'role':'worker','unknown':'ignored'})
+            await c.opened(a,psuAcp={'role':'worker','unknown':'ignored','planRef':'tracker:ABC-123','compactionLimit':250000})
             old=c.sid
+            # The session's outside plan item and context limit reach the operator's bootstrap.
+            boots=[json.loads(l) for l in host.execute('cat','/work/operator-events.jsonl').splitlines()]
+            boot=[b for b in boots if b['route'].endswith('/bootstrap-su') and b.get('role')=='worker'][-1]
+            assert boot['planRef']=='tracker:ABC-123' and '--compaction-limit=250000' in boot['argv'],boot
             await c.prompt(a,c.caseprompt('identity'))
             await a.close_session(old)
         async with c.connection() as a:
@@ -235,7 +239,11 @@ async def extended(c):
             try: await c.opened(a,psuAcp={'role':'unresolved-fixture-role'})
             except Exception as e: assert 'unresolved-fixture-role' in str(e)
             else: raise AssertionError('Unresolved role accepted')
-        return {'resumeIdentity':state['identity'],'invalidIDReported':True}
+        async with c.connection() as a:
+            try: await c.opened(a,psuAcp={'role':'worker','compactionLimit':'large'})
+            except Exception as e: assert 'compactionLimit' in str(e)
+            else: raise AssertionError('Invalid context limit accepted')
+        return {'resumeIdentity':state['identity'],'invalidIDReported':True,'planRef':boot['planRef'],'limitArg':'--compaction-limit=250000'}
     await c.case('B',identity)
 
     async def nested():
