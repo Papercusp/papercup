@@ -1,5 +1,15 @@
 # Get-feedback acceptance dossier
 
+## November 22 cancellation and usefulness checks
+
+Staging on port `3170` is open for user testing. The latest registered native trial, `24246918`, passed both Codex-target deliveries and failed the Claude fork and original usefulness-sample assertions. At 03:42 UTC the normal Claude capacity probe `51076702` found zero serving accounts among seven. Five returned HTTP 400 without a usable capacity reading and two returned HTTP 429. A fresh D-040 matrix on the build containing the cancellation change, independent acceptance, the rubric author’s decision, and verification of the promoted release are still outstanding.
+
+On working source, the real dispatcher started a private test process and the authenticated close path addressed its enrolled task. The health reader counted one cancellation when that process exited from the close’s verified SIGTERM. When the process independently rejected startup with exit 23 during close, the reader counted one launch failure. Both original launch records retained their failure verdict. An uncorrelated signal, conflicting control requests, an empty target, and a historical record without sender evidence retain their raw outcome. The November 21 signal sender remains unknown.
+
+Private PostgreSQL run group `e1624629-2068-4e8a-96ef-0c5c7e9976db` passed 32 selected checks in seven files with zero failures. The selector excluded 678 cases. Run `24252120` exercised both real-process cases and `24252119` verified that a late close receipt updates cooldown accounting without overwriting the failed launch. The named TypeScript files passed the scoped check. These results cover working source based on `cc6981d4d2b3651fefd1a14fe2fcdde6f81cb8bc`.
+
+The separate October 10 review selected eight of eleven eligible consultations from the original requester. It rated six useful and two contradictory. November 22 query `51077337` matched the thread, author and full body hash for all twelve cited answer posts. Query `51077345` matched the requester, disposition and note hash for all eight stored requester decisions. This confirms the underlying records. Independent judgment of the review’s suitability for R6 is outstanding. The October 3–5 sample remains four of eight at its fixed cutoff, and the October 26 rubric consultations form a separate sample. [October 10 review](get-feedback-reliability-usefulness-adoption-2026-10-03-quality-review-2026-10-10.json) · [Review scope and original cutoff](get-feedback-reliability-usefulness-adoption-2026-10-03-matrix-quality-coupling-2026-10-10.json)
+
 ## November 22 staging remeasurement
 
 **The consult router is available for user testing on staging, port `3170`.** Both fresh Codex-target trials returned substantive answers. The Claude fork remains open. The operator served commit `748009ebdaf61c1e8bd7e24c434128b27ffcdaf0` with bundle SHA-256 `66a5cdf16dd32b0c9ead927444590354bbb7b9b202b59bca9f211f7b6fece90a`. The process and bundle matched before and after the trials. [Staging test instructions](/reports?sel=rpt_87c4cfb4-ac09-49fb-b454-42637362369c)
@@ -18,6 +28,16 @@ The original October 3–5 usefulness sample contains four of the target eight c
 
 At the end of this measurement, the candidate still needed independent verification and grading, the rubric author's decision, and a changed-behavior trace on the promoted production artifact. The normal shipped-status receipt remains outstanding.
 
+### Registered November 22 native trial
+
+Local staging commit `a0e9adcbdffcbc48d64a85d7ad4a80a282a05bf2` contains all 19,485 bytes of the trial file with SHA-256 `815bea41482dda96de9cdc7709ee54bad63eadd585b992d25ec8167473d65955`. The 18 measured source files and the checker regression matched the native execution build `748009ebdaf61c1e8bd7e24c434128b27ffcdaf0`, including the files reached through the parent’s submodule commits. [Committed trial evidence](get-feedback-native-748009ebdaf6-2026-11-22.json)
+
+Operational run `24246918` records two passes, two failures and zero skips. Both Codex-target deliveries passed. The Claude-to-Claude fork and the original four-of-eight quality sample failed their assertions. The normal Claude capacity check at 02:23 UTC, invocation `51072466`, found zero serving accounts among seven. Two returned HTTP 429 and five returned HTTP 400 without usable rate data.
+
+Both evidence bindings point to run `24246918`. Binding `84165` covers `AUTO-BAR-R-6-P-006@7` and binding `84166` covers `GF-P006-trials@1`. The registry retained the earlier evidence because the new run failed. Its readback reported unknown currentness for the source and environment fingerprints. The governing evaluator on build `ca1702f3ea3` failed both clauses. R6 still needs evidence at the required layer, independent judgment, execution integrity and resolution of its disclosed gaps. The trial clause also requires freshness.
+
+The D-036 review preview `51075007` kept the plan open. It identified three P-006 requirements awaiting verified evidence, covering avoidable delivery failures (`M-002`), useful feedback and actual decision changes (`M-003`), and assessment from project evidence (`M-102`). It also reported missing independent verification for R6 and R7 and an incomplete acceptance grade.
+
 ### November 22 R1 and R4 verification
 
 The governing evaluator passed R1 and R4 after the checks on `7772893e72f15732f586dea1b7d1f711797cd653`. The release preview then identified three P-006 requirements that still need verified operational evidence. They cover avoidable delivery failures, usefulness, and observed requester decisions. Independent verification for R6 and R7 and the acceptance grade remain open.
@@ -30,7 +50,7 @@ The governing evaluator passed R1 and R4 after the checks on `7772893e72f15732f5
 
 The additional full terminal-host integration run, 24241507, passed 135 of 139 cases with zero skips. Two startup cases missed the expected diagnostic snapshot and two restart cases missed the predecessor-stop event by the assertion deadline. The test router identified the retained `7772893e72` checkout. The ledger recorded a dirty tree and no commit SHA. Each of the four named cases passed in both focused follow-ups, 24241527 and 24241539, with and without the inherited committed-source loader. The cause of the full-suite failures is still open on WI-6554700010067681.
 
-All 18 native trial source files and the checker regression matched their recorded blobs at `fcd2272793ba3f66d6183b614786457085c3fb96`. A subsequent read-only provider check found zero eligible Claude targets across seven accounts. Two reported a full weekly window and five supplied no usable capacity reading. The November 22 trial file has working SHA-256 `815bea41482dda96de9cdc7709ee54bad63eadd585b992d25ec8167473d65955`. Registration requires matching committed bytes.
+All 18 native trial source files and the checker regression matched their recorded blobs at `fcd2272793ba3f66d6183b614786457085c3fb96`. A subsequent read-only provider check found zero eligible Claude targets across seven accounts. Two reported a full weekly window and five supplied no usable capacity reading. The trial file was untracked at that point. Its subsequent publication and registration are recorded above.
 
 ## November 21 staging candidate
 
