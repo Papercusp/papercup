@@ -175,8 +175,11 @@ describe('the isolated native Plans comparison', () => {
         expect(createHash('sha256').update(bytes).digest('hex')).toBe(trace.sha256);
         writeFileSync(join(dir, trace.file), bytes, { flag: 'wx' });
       }
-      const coverage = readComparisonCoverage(dir, { ...run.request, privateWorkspace: run.privateWorkspace }, run.runtimeBefore);
+      const request = { ...run.request, privateWorkspace: run.privateWorkspace };
+      const coverage = readComparisonCoverage(dir, request, run.runtimeBefore);
       expect(coverage).toEqual(run.coverage);
+      const otherProcess = { ...run.runtimeBefore, units: ['another-native-process'] };
+      expect(() => readComparisonCoverage(dir, request, otherProcess)).toThrow(/trace runtime units/);
       expect(createHash('sha256').update(JSON.stringify(coverage) + '\n').digest('hex')).toBe(run.coverageSha256);
       expect(coverage.cells).toHaveLength(45);
       const observed = coverage.cells.filter(cell => cell.observations.length);
