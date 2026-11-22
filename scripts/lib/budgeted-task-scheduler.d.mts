@@ -152,6 +152,24 @@ export interface NativeNpmLifecycleDiagnostics {
 }
 
 export function syncBudgetedTaskNativeExecutionReceipt(saved: ReturnType<typeof writeBudgetedTaskNativeExecutionReceipt>): void;
+export interface ConditionRailInputIdentity { sha256: string; byteLength: number; }
+export interface ConditionRailInputManifest {
+  schemaVersion: 'condition-rail-lint-inputs-v1'; pid: number; ppid: number; kernelProcessIdentity: string | null;
+  cwd: string; startedAtMs: number; finishedAtMs: number; completed: boolean;
+  sources: Array<ConditionRailInputIdentity & { path: string }>;
+  inventory: { scanned: number; unreadableFiles: string[]; submodules: { declared: string[]; scanned: string[];
+    unscanned: string[]; unscannedPresent: string[]; unscannedAbsent: string[]; outsideScanScope: string[] } } | null;
+  seed: (ConditionRailInputIdentity & { path: string }) | null; baseline: (ConditionRailInputIdentity & { path: string }) | null;
+  history: { log: (ConditionRailInputIdentity & { stdout: string }) | null;
+    shows: Array<ConditionRailInputIdentity & { revision: string }> };
+}
+export interface ConditionRailInputObservation {
+  status: 'recorded' | 'partial' | 'unknown'; gaps: string[]; artifact?: NativeArtifactPin;
+  parts?: Array<{ artifact: NativeArtifactPin }>; processIdentity?: string; pid?: number;
+}
+export function publishConditionRailInputManifest(out: string, manifest: ConditionRailInputManifest): string;
+export function readConditionRailInputEvidence(root: string, receiptPin: NativeArtifactPin):
+  ConditionRailInputObservation & { manifest: ConditionRailInputManifest | null };
 export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot: string, input: {
   task: string; attempt: string; cwd: string; command: string[]; originalCommand?: string | null;
   /** Requested command and environment before diagnostic preload/wrapper additions. Values are never retained. */
@@ -170,6 +188,7 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot: string, in
     orderedChainQualified: false; runtimeClosure: 'unmeasured'; operationalAcceptance: false;
     steps: never[]; gaps: string[];
     processTrace: { scope: string; gaps: string[];
+      conditionRailInputs?: ConditionRailInputObservation;
       /** Referenced returned-source bytes only; never a complete runtime census. */
       loaderSources?: { scope: 'referenced-loader-source'; status: 'retained' | 'partial' | 'unobserved';
         referenceLimit: number; artifactByteLimit: number; totalByteLimit: number;
