@@ -438,8 +438,7 @@ describe('scoped feasibility physical selection foundation', () => {
   }));
 });
 
-import { checkPlanExecutionGuard, isPlanImplementationCall, isPlanResearchCommand, planExecutionMeaning } from './plan-execution-guard';
-import type { ExecutionPlanBinding } from './plan-execution-guard';
+import { isPlanImplementationCall, isPlanResearchCommand, planExecutionMeaning } from './plan-execution-guard';
 import { resolveAgentGoal } from '../../agent-goal-ref';
 
 const call = (toolName = 'apply_patch', args: unknown = { patch: 'implementation' }) =>
