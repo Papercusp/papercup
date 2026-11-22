@@ -46,7 +46,7 @@ import {
   type StartDrainOptions,
   type EpochEncryptCapability,
 } from './outbox-drain';
-import { fanoutOutboxRow } from './fanout-projection';
+import { dispatchOutboxFanout } from './durable-fanout';
 import { retryOwedFanoutFindings, retryPendingFanoutDeliveries } from './fanout-deliveries';
 import { hubListen, listenHubEnabled } from '../../pg-listen-hub';
 import { buildHiveRekeyBootDeps } from './hive-epoch-boot-deps';
@@ -218,7 +218,7 @@ export async function wireOutboxForHarness(
 
   const start = deps.startOutboxDrain ?? realStartOutboxDrain;
   const startOpts: StartDrainOptions = {
-    fanout: fanoutOutboxRow,
+    fanout: (row) => dispatchOutboxFanout(handle.workspaceId, row),
     // P-003: the two ledgers progress independently on the existing drain cadence.
     // An ended/recovered notification can still owe its R-27 finding. Starting
     // both before awaiting also keeps a notification-sweep failure from hiding it.

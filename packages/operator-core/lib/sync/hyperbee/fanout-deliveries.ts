@@ -34,7 +34,7 @@
  * coord workspace, the same pool and scope coord_event_log is written through.
  */
 
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { getOrgPg } from '@papercusp/db-org';
 import {
@@ -128,6 +128,14 @@ export function routeForReasons(reasons: readonly string[] | null | undefined): 
   return durable.length > 0 && durable.every((r) => r === 'held_item') ? 'item-read' : 'inbox';
 }
 
+/** Item reads address a reference by ID across kinds. Use that same lock for
+ * inbox writes, irrespective of the direct or topic subscription used. The
+ * following statement then sees the committed position of the preceding writer. */
+async function lockRecipientReference(tx: TransactionSql, ws: string, subscriber: string, ref: string): Promise<void> {
+  const key = JSON.stringify(['substrate-fanout', ws, subscriber, ref]);
+  await tx`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`;
+}
+
 /**
  * Write one fan-out notification durably, in ONE statement:
  *  1. re-check the subscription is live (FOR SHARE, so a concurrent cancel
@@ -151,12 +159,18 @@ export async function writeFanoutNotify(
   const msgId = fanoutMsgId(outboxId, sub.subscriber_id);
   const env = buildInjectEnvelope(sub, ev, msgId);
   const { targetKind, targetRef } = resolvedSubscriberTarget(object, sub);
-  const rows = await sql<{ inserted: number; prior: number; live: number; pend: number }[]>`
-    WITH live AS (
+  const subject = object.kind + ':' + object.ref;
+  const rows = await sql.begin(async tx => {
+    await lockRecipientReference(tx, ws, sub.subscriber_id, object.ref);
+    return tx<{ inserted: number; prior: number; live: number; pend: number; older: boolean }[]>`
+    WITH position AS (
+      SELECT outbox_id FROM harness_shared.substrate_fanout_recipient_positions
+       WHERE workspace_id = ${ws} AND subscriber_id = ${sub.subscriber_id} AND subject = ${subject}),
+    live AS (
       SELECT s.id FROM harness_shared.coord_entity_subscriptions AS s
        WHERE s.workspace_id = ${ws} AND s.subscriber_id = ${sub.subscriber_id}
          AND s.target_kind = ${targetKind} AND s.target_ref = ${targetRef}
-         AND ${sql.unsafe(LIVE_SUBSCRIPTION_SQL)}
+         AND ${tx.unsafe(LIVE_SUBSCRIPTION_SQL)}
        LIMIT 1
        FOR SHARE),
     pend AS (
@@ -168,6 +182,7 @@ export async function writeFanoutNotify(
       INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body)
       SELECT ${ws}, 'messages', ${sub.subscriber_id}, ${msgId}, ${JSON.stringify(env)}::text::jsonb
        WHERE EXISTS (SELECT 1 FROM live)
+         AND NOT EXISTS (SELECT 1 FROM position WHERE outbox_id >= ${outboxId}::bigint)
          AND (NOT ${requirePending}::boolean OR EXISTS (SELECT 1 FROM pend))
       ON CONFLICT (workspace_id, msg_id) WHERE (surface = 'messages' AND (body ->> 'notify_kind') IS NOT NULL)
       DO NOTHING
@@ -177,12 +192,32 @@ export async function writeFanoutNotify(
        WHERE e.workspace_id = ${ws} AND e.msg_id = ${msgId}
          AND e.surface = 'messages' AND (e.body ->> 'notify_kind') IS NOT NULL
        LIMIT 1),
+    advance AS (
+      INSERT INTO harness_shared.substrate_fanout_recipient_positions AS p
+        (workspace_id, subscriber_id, subject, outbox_id)
+      SELECT ${ws}, ${sub.subscriber_id}, ${subject}, ${outboxId}::bigint
+       WHERE EXISTS (SELECT 1 FROM ins) OR EXISTS (SELECT 1 FROM prior)
+      ON CONFLICT (workspace_id, subscriber_id, subject) DO UPDATE SET outbox_id = EXCLUDED.outbox_id
+       WHERE p.outbox_id < EXCLUDED.outbox_id),
+    late AS (
+      INSERT INTO harness_shared.substrate_fanout_deliveries AS d
+        (workspace_id, outbox_id, subscriber_id, msg_id, object_kind, object_ref, target_kind, target_ref,
+         delivery, route, state, attempts, superseded_by_outbox_id)
+      SELECT ${ws}, ${outboxId}::bigint, ${sub.subscriber_id}, ${msgId}, ${object.kind}, ${object.ref},
+             ${targetKind}, ${targetRef}, ${JSON.stringify({ sub, ev })}::text::jsonb, 'inbox', 'superseded', 0, p.outbox_id
+        FROM position AS p WHERE p.outbox_id > ${outboxId}::bigint AND EXISTS (SELECT 1 FROM live)
+         AND NOT EXISTS (SELECT 1 FROM prior)
+         AND (NOT ${requirePending}::boolean OR EXISTS (SELECT 1 FROM pend))
+      ON CONFLICT (workspace_id, outbox_id, subscriber_id) DO UPDATE
+         SET state = 'superseded', superseded_by_outbox_id = EXCLUDED.superseded_by_outbox_id,
+             next_retry_at = NULL, updated_at = now() WHERE d.state = 'pending'),
     own AS (
       UPDATE harness_shared.substrate_fanout_deliveries AS d
          SET state = 'written', next_retry_at = NULL, last_error = NULL, updated_at = now()
        WHERE d.workspace_id = ${ws} AND d.outbox_id = ${outboxId}::bigint
          AND d.subscriber_id = ${sub.subscriber_id} AND d.state = 'pending'
-         AND (EXISTS (SELECT 1 FROM ins) OR EXISTS (SELECT 1 FROM prior))
+         AND (EXISTS (SELECT 1 FROM ins) OR EXISTS (SELECT 1 FROM prior)
+           OR EXISTS (SELECT 1 FROM position WHERE outbox_id = ${outboxId}::bigint))
       RETURNING 1),
     sup AS (
       UPDATE harness_shared.substrate_fanout_deliveries AS d
@@ -198,12 +233,15 @@ export async function writeFanoutNotify(
            (SELECT count(*) FROM live)::int AS live,
            (SELECT count(*) FROM pend)::int AS pend,
            (SELECT count(*) FROM own)::int AS own,
-           (SELECT count(*) FROM sup)::int AS superseded`;
+           (SELECT count(*) FROM sup)::int AS superseded,
+           EXISTS (SELECT 1 FROM position WHERE outbox_id > ${outboxId}::bigint) AS older`;
+  });
   const r = rows[0];
   if (requirePending && Number(r?.pend ?? 0) === 0) return 'not-pending';
   if (Number(r?.inserted ?? 0) > 0) return 'written';
   if (Number(r?.prior ?? 0) > 0) return 'duplicate';
   if (Number(r?.live ?? 0) === 0) return 'subscription-gone';
+  if (r?.older) return 'not-pending';
   // Live, no insert and no visible prior row: a concurrent writer inserted the
   // same msg_id after this statement's snapshot. The notification exists.
   return 'duplicate';
@@ -627,12 +665,33 @@ export async function claimPendingItemReadDeliveries(
   const sql = sqlOf(opts);
   const ws = wsOf(opts);
   if (!input.readerId?.trim() || !input.itemId?.trim()) return [];
-  const rows = await sql<{ outbox_id: string; msg_id: string; object_kind: string; object_ref: string; delivery: FanoutDeliveryPayload | string; created_at: Date }[]>`
-    UPDATE harness_shared.substrate_fanout_deliveries
-       SET state = 'written', read_at = now(), next_retry_at = NULL, updated_at = now()
-     WHERE workspace_id = ${ws} AND subscriber_id = ${input.readerId} AND state = 'pending'
-       AND route = 'item-read' AND object_ref = ${input.itemId}
-    RETURNING outbox_id::text AS outbox_id, msg_id, object_kind, object_ref, delivery, created_at`;
+  const rows = await sql.begin(async tx => {
+    await lockRecipientReference(tx, ws, input.readerId, input.itemId);
+    return tx<{ outbox_id: string; msg_id: string; object_kind: string; object_ref: string; delivery: FanoutDeliveryPayload | string; created_at: Date }[]>`
+      WITH pending AS (
+        SELECT d.outbox_id, p.outbox_id AS last_written
+          FROM harness_shared.substrate_fanout_deliveries AS d
+          LEFT JOIN harness_shared.substrate_fanout_recipient_positions AS p
+            ON p.workspace_id = d.workspace_id AND p.subscriber_id = d.subscriber_id AND p.subject = d.object_kind || ':' || d.object_ref
+         WHERE d.workspace_id = ${ws} AND d.subscriber_id = ${input.readerId} AND d.state = 'pending'
+           AND d.route = 'item-read' AND d.object_ref = ${input.itemId}
+         FOR UPDATE OF d),
+      settled AS (
+        UPDATE harness_shared.substrate_fanout_deliveries AS d
+           SET state = CASE WHEN p.last_written > d.outbox_id THEN 'superseded' ELSE 'written' END,
+               superseded_by_outbox_id = CASE WHEN p.last_written > d.outbox_id THEN p.last_written END,
+               read_at = CASE WHEN p.last_written IS NULL OR p.last_written < d.outbox_id THEN now() END,
+               next_retry_at = NULL, updated_at = now()
+          FROM pending AS p WHERE d.workspace_id = ${ws} AND d.subscriber_id = ${input.readerId} AND d.outbox_id = p.outbox_id
+        RETURNING d.outbox_id, d.msg_id, d.object_kind, d.object_ref, d.delivery, d.created_at, d.read_at),
+      advance AS (
+        INSERT INTO harness_shared.substrate_fanout_recipient_positions AS p (workspace_id, subscriber_id, subject, outbox_id)
+        SELECT ${ws}, ${input.readerId}, object_kind || ':' || object_ref, max(outbox_id)
+          FROM settled WHERE read_at IS NOT NULL GROUP BY object_kind, object_ref
+        ON CONFLICT (workspace_id, subscriber_id, subject) DO UPDATE SET outbox_id = EXCLUDED.outbox_id
+         WHERE p.outbox_id < EXCLUDED.outbox_id)
+      SELECT outbox_id::text, msg_id, object_kind, object_ref, delivery, created_at FROM settled WHERE read_at IS NOT NULL`;
+  });
   return rows
     .map((r) => {
       const { ev } = parsePayload(r.delivery);

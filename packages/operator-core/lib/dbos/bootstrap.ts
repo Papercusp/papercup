@@ -572,6 +572,7 @@ async function startDbosOnce(): Promise<void> {
   const { wireRepairAutoVerify } = await import('./repair-auto-verify-workflow');
   // P004: registration precedes launch so committed per-plan admissions recover after restart.
   await import('./acceptance-grading-dispatch-workflow');
+  await import('./reference-fanout-workflow');
 
   try {
     await DBOS.launch();

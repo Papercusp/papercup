@@ -169,16 +169,20 @@ export class FanoutLedgerWriteError extends Error {
  * the count delivered. A table with no mapping (or an empty ref / no subscribers)
  * is a no-op. Pure over injected deps, so it is unit-testable without PG.
  */
-export async function runFanoutForOutboxRow(outboxRow: OutboxFanoutRow, deps: FanoutDeps): Promise<number> {
+export interface FanoutChange {
+  outboxId: string;
+  object: ObjectRef;
+  event: InjectEvent;
+}
+
+/** Resolve the capture-time mapping before crossing into a different process. */
+export function prepareFanoutChange(outboxRow: OutboxFanoutRow): FanoutChange | null {
   const mapping = SUBSCRIBABLE_TABLES.get(outboxRow.table_name);
-  if (!mapping) return 0;
+  if (!mapping) return null;
   const ref = mapping.ref(outboxRow.key, outboxRow.row);
-  if (!ref) return 0;
+  if (!ref) return null;
 
   const object: ObjectRef = { kind: mapping.kind, ref };
-  const subscribers = await deps.resolve(object);
-  if (subscribers.length === 0) return 0;
-
   const ev: InjectEvent = {
     from: 'substrate',
     subject: `${mapping.kind}:${ref}`,
@@ -189,7 +193,17 @@ export async function runFanoutForOutboxRow(outboxRow: OutboxFanoutRow, deps: Fa
       evaluateDataCondition(mapping.isResolution, { op: outboxRow.op, key: outboxRow.key, row: outboxRow.row }),
   };
 
-  const outboxId = String(outboxRow.id);
+  return { outboxId: String(outboxRow.id), object, event: ev };
+}
+
+export async function runFanoutForOutboxRow(outboxRow: OutboxFanoutRow, deps: FanoutDeps): Promise<number> {
+  const change = prepareFanoutChange(outboxRow);
+  return change ? runFanoutForChange(change, deps) : 0;
+}
+
+export async function runFanoutForChange(change: FanoutChange, deps: FanoutDeps): Promise<number> {
+  const { outboxId, object, event: ev } = change;
+  const subscribers = await deps.resolve(object);
   let delivered = 0;
   const unrecorded: string[] = [];
   let unrecordedCause: unknown = null;
@@ -307,13 +321,14 @@ export async function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): P
  * deterministic msg_id makes that re-run idempotent. Returns count delivered.
  */
 export async function fanoutOutboxRow(outboxRow: OutboxFanoutRow): Promise<number> {
-  const pg = getOrgPg().sql as unknown as Sql;
-  return runFanoutForOutboxRow(outboxRow, {
-    resolve: resolveForDelivery,
-    deliver: (outboxId, sub, ev, object) => writeFanoutNotify({ outboxId, sub, ev, object }, { sql: pg }),
-    recordFailure: (outboxId, sub, ev, object, error) => recordFanoutFailure({ outboxId, sub, ev, object, error }, { sql: pg }),
-  });
+  return runFanoutForOutboxRow(outboxRow, outboxFanoutDeps);
 }
+
+export const outboxFanoutDeps = {
+  resolve: resolveForDelivery,
+  deliver: (outboxId, sub, ev, object) => writeFanoutNotify({ outboxId, sub, ev, object }),
+  recordFailure: (outboxId, sub, ev, object, error) => recordFanoutFailure({ outboxId, sub, ev, object, error }),
+} satisfies FanoutDeps;
 
 /**
  * The canonical synchronous fan-out seam for a change that does NOT flow through
