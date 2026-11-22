@@ -345,6 +345,7 @@
     "apps/operator/scripts/psu-launcher.mjs",
     "apps/operator/scripts/psu-identity-assume.mjs",
     "packages/operator-core/lib/framework-install-spec.mjs",
+    "packages/operator-core/bin/gcp-clean-room-args.mjs",
     // P-004 bounded native recovery — imported directly by its TypeScript
     // contract test and by psu-launcher.mjs; generate the typed sibling so both
     // importers cannot absorb a TS7016 or drift onto an inferred any surface.
