@@ -1,0 +1,443 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Consult router native receipts on staging 748009ebdaf6",
+  "framework": "operational",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "planItem": "P-006",
+  "workItemId": "WI-6554700010046171",
+  "requesterId": "su-40c37918-3d17-43e0-ab0e-e3ff709f1776",
+  "command": [
+    "Verify the staging reader's source commit, running process, bundle, and the original source-file set.",
+    "Run the original eligible questions through testing:run nativeConsult with the recorded backend and source-state constraints.",
+    "Read the native source boundary, delivered port, persisted kickoff, typed answer and authenticated close for each request.",
+    "Read the bounded routing-health window and compare the original and supplemental dated review records."
+  ],
+  "startedAt": "2026-11-22T00:13:23.362Z",
+  "finishedAt": "2026-11-22T00:24:44Z",
+  "exitCode": 1,
+  "summary": "The two Codex-target trials each produced a substantive answer from a separate native answering session. The Claude fork had no confirmed eligible target. The original natural-work sample remains four of eight. A secondary conversion produced a native receipt and no typed answer before the requester closed.",
+  "runtime": {
+    "service": "papercup-staging-api.service",
+    "route": "operator-api",
+    "port": 3170,
+    "build": "748009ebdaf61c1e8bd7e24c434128b27ffcdaf0",
+    "canonicalAtMeasurement": "748009ebdaf61c1e8bd7e24c434128b27ffcdaf0",
+    "generation": ".candidate-748009ebdaf6.tybvaJ",
+    "pid": 409322,
+    "processId": "linux:89abde54-a267-447a-b75c-4025313eaf90:86968855",
+    "bundleSha256": "66a5cdf16dd32b0c9ead927444590354bbb7b9b202b59bca9f211f7b6fece90a",
+    "manifestSha256": "1c572a7583ebdbe3e6c844f28e1049eef39cddf21eb38fea54dc2e6ecc46fc3c",
+    "comparisonArtifact": "docs/evidence/get-feedback-native-4669cc2ebe6-2026-11-21.json",
+    "comparisonArtifactSha256": "404780482508c05beac59262d4fa57acbb5e93bac999767ade56034c119ef4e7",
+    "matchingFiles": [
+      {
+        "path": "packages/operator-core/lib/consult/get-feedback-core.ts",
+        "blob": "7407368d12a081e46bc55c89ea7673beeebb1426"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/get-feedback-core.integration.test.ts",
+        "blob": "6df5b7a7af87a7985703c0af0043806f25d1513f"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/relevance-router.ts",
+        "blob": "b4e6318894f54af28e4e5d91b5d9007c950aaa27"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/relevance-router.integration.test.ts",
+        "blob": "00005614741b8ec809c115fd25847aaf4ddb7d83"
+      },
+      {
+        "path": "apps/operator/scripts/psu-launcher.mjs",
+        "blob": "5e22233ca11183c2214109688c2e8eed103d6d4e"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+        "blob": "9694cce5ce84aed364bf583daa322f90ce6cdc4e"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/native-consult.ts",
+        "blob": "f3d6bb610af049a79b89b39bf22c314f2333c90b"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/testing/native-consult.ts",
+        "blob": "e40b00fc79f0a554e6ca7ae7f3e34d3e4b0a9016"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/testing/native-consult-contract.ts",
+        "blob": "9ea4c8254147cf2959de7e38a2e48f261eaaf0f1"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/resume-transcript-preflight.ts",
+        "blob": "1ea5c4d6df3a268e839a25e46685de6cb256dc7b"
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/session-launch-dirs.ts",
+        "blob": "2342c6ad14b0986c3a5bdea1ee77636468fd2985"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-launch-core.ts",
+        "blob": "ef03c1b90738c940727d52f4002c6049c54a8c82"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/get-feedback-prod.ts",
+        "blob": "839f180b6cd0ad9a796bd427c40e6723af521735"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/testing/native-check-consult-receipts.ts",
+        "blob": "ae6a2eb037809532a4a70a11a7566085c703a607"
+      },
+      {
+        "path": "packages/operator-core/lib/session-port/native-adapter.ts",
+        "blob": "bc5ebb2d1379a72848bf18442bbdf79f855e3118"
+      },
+      {
+        "path": "packages/operator-core/lib/session-port/source.ts",
+        "blob": "e232db5c3399c4fcdd99ae342870a642f41837dd"
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/codex-transcript.ts",
+        "blob": "99ef59fddfd258d6a01dc534bc7ea04ea086e898"
+      },
+      {
+        "path": "packages/operator-core/lib/session-outside-plan.ts",
+        "blob": "9dfa5ebe9c512beb5c896d1644f2a4feab63639f"
+      }
+    ],
+    "regressionTest": {
+      "path": "packages/operator-core/lib/agent-tools/testing/native-check-consult-receipts.test.ts",
+      "blob": "6266a57565194449337f202d495838ca1779009a"
+    },
+    "changedSinceComparison": [
+      {
+        "path": "packages/operator-core/lib/agent-tools/testing/native-check-consult-receipts.ts",
+        "priorBlob": "08e8909268f92d7ff1d73f1d0904912c85ee2aff",
+        "blob": "ae6a2eb037809532a4a70a11a7566085c703a607"
+      }
+    ],
+    "historicalReplay": {
+      "november": 24236112,
+      "october": 24236133,
+      "checkerItem": "WI-6554700010067225"
+    }
+  },
+  "codexAdmission": {
+    "invocation": 51060718,
+    "observedAt": "2026-11-22T00:13:23.362Z",
+    "model": "gpt-5.6-sol",
+    "apply": false,
+    "probed": 8,
+    "serving": 1,
+    "confirmedHttp429": 1
+  },
+  "matrix": {
+    "partition": {
+      "checked": [
+        "claude-ended-to-codex-conversion",
+        "codex-live-to-codex-session-port"
+      ],
+      "unavailable": [
+        "claude-ended-to-claude-fork"
+      ],
+      "residual": []
+    },
+    "cells": [
+      {
+        "cell": "claude-ended-to-claude-fork",
+        "mode": "isolated native fork",
+        "status": "unavailable",
+        "passed": false,
+        "attemptedOnThisBuild": false,
+        "constraints": {
+          "sourceBackend": "claude",
+          "sourceState": "ended",
+          "targetBackend": "claude"
+        },
+        "providerProbe": {
+          "invocation": 51060728,
+          "observedAt": "2026-11-22T00:13:27.343Z",
+          "apply": false,
+          "probed": 7,
+          "serving": 0,
+          "confirmedHttp429": 2,
+          "http400WithoutUsableRateReading": 5
+        },
+        "scope": "No eligible Claude target was confirmed for this round. Five accounts returned HTTP 400 without rate information. Their current credit balance and recovery time are unknown.",
+        "tracking": "EI-28117756199478310"
+      },
+      {
+        "cell": "claude-ended-to-codex-conversion",
+        "mode": "isolated conversion",
+        "status": "checked",
+        "passed": true,
+        "attemptedOnThisBuild": true,
+        "constraints": {
+          "sourceState": "ended",
+          "sourceBackend": "claude",
+          "targetBackend": "codex"
+        },
+        "requestKey": "wi6171-r6-3394-748009ebdaf61c1e8bd7e24c434128b27ffcdaf0-ended-claude-to-codex-v1",
+        "invocation": 51060792,
+        "conversationId": "conv-request-f8e2a78f26a031c2c56508d242ecb8743ed2800b6eb602bdd87dbbc657ccdefb",
+        "threadId": "thr-conv-request-f8e2a78f26a031c2c56508d242ecb8743ed2800b6eb602bdd87dbbc657ccdefb",
+        "createdAt": "2026-11-22T00:13:46.190Z",
+        "state": "closed_answered",
+        "sourceOwnerId": "su-3633bdcb-453b-4177-a7fc-dfa2ed6c8ff9",
+        "sourceAdvSessionId": 48112,
+        "sourceNativeSessionId": "5ede16a5-c4c8-4399-82bb-9a54015998bb",
+        "sourceKind": "archive-manifest",
+        "sourceCompleteBytes": 2214132,
+        "selectionSourceSha256": "774b47fde37ec37fb287d1bbb152617a76d30a8d67d2f7b04d608665701d4476",
+        "portId": "d98cad3a-24e6-4b99-a011-f83bc6f8cb0f",
+        "portStatus": "delivered",
+        "portSourceSha256": "774b47fde37ec37fb287d1bbb152617a76d30a8d67d2f7b04d608665701d4476",
+        "deliveredAt": "2026-11-22T00:14:56.850Z",
+        "answeringOwnerId": "su-8ddc6e34-6e83-4a54-bd29-bd60f5a33705",
+        "targetAdvSessionId": 64009,
+        "targetNativeSessionId": "01a2009b-0ac8-70c1-8083-12cce98ebbb7",
+        "targetRankModel": "sol",
+        "targetModel": "gpt-5.6-sol",
+        "nativeKickoff": {
+          "verified": true,
+          "persisted": true,
+          "bootstrapReceiptCommitted": true,
+          "renderedSha256": "66b61d9cf660b488efa2e8866357e2ad91806f918400c4c32a605b9f59201e56",
+          "verifiedAt": "2026-11-22T00:14:56.848Z"
+        },
+        "answerPostId": 1241014,
+        "answeredAt": "2026-11-22T00:16:18.764Z",
+        "answerChars": 2294,
+        "replyInvocation": 51061055,
+        "closePostId": 1241015,
+        "closedBy": "su-40c37918-3d17-43e0-ab0e-e3ff709f1776",
+        "closedAt": "2026-11-22T00:17:42.068Z",
+        "closeInvocation": 51061196,
+        "requesterUse": "I retained checkout-wide copy-on-write protection for the proof. The reason and my decision are in requester close post 1241015.",
+        "sourceIsolation": {
+          "sourceCapturedAt": "2026-11-22T00:14:26.329Z",
+          "sourceCaptureCompletedAt": "2026-11-22T00:14:26.674Z",
+          "afterObservedAt": "2026-11-22T00:19:09.407Z",
+          "workItemsBefore": [],
+          "workItemsAfter": [],
+          "planClaimsBefore": [],
+          "planClaimsAfter": [],
+          "archiveCustodyReference": "docs/evidence/get-feedback-native-1bc141a6e56-2026-11-21.json"
+        }
+      },
+      {
+        "cell": "codex-live-to-codex-session-port",
+        "mode": "maintained session-port adapter",
+        "status": "checked",
+        "passed": true,
+        "attemptedOnThisBuild": true,
+        "constraints": {
+          "sourceState": "live",
+          "sourceBackend": "codex",
+          "targetBackend": "codex"
+        },
+        "requestKey": "wi6171-r6-3394-748009ebdaf61c1e8bd7e24c434128b27ffcdaf0-live-codex-to-codex-v1",
+        "invocation": 51061209,
+        "conversationId": "conv-request-791dd30886951a35243cedcd6f9f00446fbb118d57760f73e17f0ea04a824e75",
+        "threadId": "thr-conv-request-791dd30886951a35243cedcd6f9f00446fbb118d57760f73e17f0ea04a824e75",
+        "createdAt": "2026-11-22T00:17:53.432Z",
+        "state": "closed_answered",
+        "sourceOwnerId": "su-598a1fb5-569f-4322-bda8-20888ead8e48",
+        "sourceAdvSessionId": 63199,
+        "sourceNativeSessionId": "01a1f237-86e6-7cd3-b6e9-bbed29781b9e",
+        "sourceKind": "live-jsonl",
+        "sourceCompleteBytes": 2758267,
+        "selectionSourceSha256": "e631bae7ae220c9038517cfb40fbe54eaa52fca75c5246a9b1a6e7eded48098d",
+        "portId": "bc6d190c-9ad0-4923-aa23-c77935d87140",
+        "portStatus": "delivered",
+        "portSourceSha256": "e631bae7ae220c9038517cfb40fbe54eaa52fca75c5246a9b1a6e7eded48098d",
+        "deliveredAt": "2026-11-22T00:18:33.446Z",
+        "answeringOwnerId": "su-64f753b5-6c32-4ece-9d13-7081304b251a",
+        "targetAdvSessionId": 64011,
+        "targetNativeSessionId": "01a2009e-57f5-7fb3-aa0c-e75ab3531850",
+        "targetRankModel": "sol",
+        "targetModel": "gpt-5.6-sol",
+        "nativeKickoff": {
+          "verified": true,
+          "persisted": true,
+          "bootstrapReceiptCommitted": true,
+          "renderedSha256": "8b8dfa6aa007561bad01df16ae485ce2bfbf67d7fc47a48cc8260e95cde4b28a",
+          "verifiedAt": "2026-11-22T00:18:33.445Z"
+        },
+        "answerPostId": 1241018,
+        "answeredAt": "2026-11-22T00:20:41.811Z",
+        "answerChars": 2516,
+        "replyInvocation": 51061532,
+        "closePostId": 1241019,
+        "closedBy": "su-64f753b5-6c32-4ece-9d13-7081304b251a",
+        "closedAt": "2026-11-22T00:20:51.692Z",
+        "closeInvocation": 51061546,
+        "requesterUse": "I retained the declared source file set and compared the complete selected blobs for this round. Post 1241018 identifies the committed-file fingerprint implementation.",
+        "sourceIsolation": {
+          "sourceCapturedAt": "2026-11-22T00:18:13.157Z",
+          "sourceCaptureCompletedAt": "2026-11-22T00:18:13.244Z",
+          "afterObservedAt": "2026-11-22T00:21:38.736Z",
+          "workItemsBefore": [],
+          "workItemsAfter": [],
+          "planClaimsBefore": [],
+          "planClaimsAfter": [],
+          "prefixAfter": {
+            "observedAt": "2026-11-22T00:21:38.707514+00:00",
+            "expectedBytes": 2758267,
+            "readBytes": 2758267,
+            "sha256": "e631bae7ae220c9038517cfb40fbe54eaa52fca75c5246a9b1a6e7eded48098d",
+            "deviceAndInodeMatched": true,
+            "fileBytesAtRead": 2758267
+          }
+        }
+      }
+    ]
+  },
+  "additionalAttempts": [
+    {
+      "conversationId": "conv-request-f8e2a78f26a031c2c56508d242ecb8743ed2800b6eb602bdd87dbbc657ccdefb",
+      "walk": 2,
+      "rank": 3,
+      "sourceOwnerId": "su-0dd6b9aa-3d59-4727-991e-377d05bc2459",
+      "sourceAdvSessionId": 39735,
+      "sourceNativeSessionId": "2b0ec342-9c42-43a3-91eb-7b95a984fea5",
+      "sourceKind": "archive-manifest",
+      "selectionSourceSha256": "30ac7f3eb5038523e98cba4f68b1b4e88dbbb6482403355dece772d9286f620f",
+      "sourceCompleteBytes": 2638617,
+      "portId": "0912a181-b79f-4824-9de6-bb95794ee1dc",
+      "portStatus": "delivered",
+      "portSourceSha256": "30ac7f3eb5038523e98cba4f68b1b4e88dbbb6482403355dece772d9286f620f",
+      "deliveredAt": "2026-11-22T00:16:36.012Z",
+      "answeringOwnerId": "su-3ca8a9ba-2798-43b1-a14d-f7b68b3a01a9",
+      "targetAdvSessionId": 64010,
+      "targetNativeSessionId": "01a2009c-8db7-7110-886e-1d7e5bbe8b6e",
+      "targetModel": "gpt-5.6-sol",
+      "nativeKickoff": {
+        "verified": true,
+        "persisted": true,
+        "bootstrapReceiptCommitted": true,
+        "renderedSha256": "9f50def9460fc85edf6f273687db986624c6b4b9342ab8c92e880f82d1973e70",
+        "verifiedAt": "2026-11-22T00:16:35.952Z"
+      },
+      "sourceClaims": {
+        "capturedAt": "2026-11-22T00:14:27.827Z",
+        "completeAt": "2026-11-22T00:14:28.098Z",
+        "before": [],
+        "after": [],
+        "planBefore": [],
+        "planAfter": [],
+        "afterAt": "2026-11-22T00:19:09.407Z"
+      },
+      "typedAnswerPostId": null,
+      "unsuccessfulReplyInvocation": 51061191,
+      "observation": "The requester closed using the first responder's post. The secondary responder's reply attempt was refused for malformed evidence. The ledger has no typed answer from that responder in this trial."
+    }
+  ],
+  "replyValidation": [
+    {
+      "invocation": 51061007,
+      "code": "invalid_input",
+      "observed": "Evidence consisted of strings where transcript-turn objects were required."
+    },
+    {
+      "invocation": 51061191,
+      "code": "invalid_input",
+      "observed": "Evidence consisted of strings where transcript-turn objects were required."
+    },
+    {
+      "invocation": 51061503,
+      "code": "invalid_input",
+      "observed": "Typed evidence, missing body, unrecognized answer field."
+    }
+  ],
+  "sourceEvidenceScope": "The source digests at selection matched the delivered ports. Work-item and plan-claim endpoints were empty before and after. The live source prefix matched its file identity and complete-byte hash. Intervening changes, wakes and their actors are unknown.",
+  "archivedSourceProvenance": {
+    "reference": "docs/evidence/get-feedback-native-1bc141a6e56-2026-11-21.json",
+    "referenceSha256": "a2f8fbbc5ff75c556ce10c4c58d00bcb95f54ac59de47fd00e74184267cdd7d9",
+    "sourceNativeSessionId": "5ede16a5-c4c8-4399-82bb-9a54015998bb",
+    "selectionSourceSha256": "774b47fde37ec37fb287d1bbb152617a76d30a8d67d2f7b04d608665701d4476",
+    "scope": "Primary source has the same complete length and digest as the previously checked archived selection."
+  },
+  "routingHealth": {
+    "args": {
+      "since": "2026-11-22T00:13:46.098Z",
+      "until": "2026-11-22T00:21:05.000Z"
+    },
+    "asOf": "2026-11-22T00:22:08.235Z",
+    "cohort": "launch-time",
+    "totals": {
+      "consults": 79,
+      "consultsWithoutDispatchRecords": 76,
+      "launched": 3,
+      "answered": 3,
+      "declined": 0,
+      "failed": 0,
+      "failedReasons": {},
+      "hung": 0,
+      "pending": 0,
+      "skipped": 0,
+      "skippedReasons": {}
+    },
+    "bounded": {
+      "truncatedByLimit": false,
+      "consultsScanned": 79,
+      "consultLimit": 5000,
+      "dispatchLogCapped": 0
+    },
+    "scope": "Workspace launch-time counters. The answered counter can also credit a close to the latest launch. The two controlled requests have two distinct typed answering authors. The third native launch has no typed answer at close."
+  },
+  "deliveryFailureAssessment": {
+    "recordedRankFailures": 0,
+    "verifiedWalks": 3,
+    "distinctTypedAnswers": 2,
+    "scope": "Both available requested paths completed. The three rejected tool calls and secondary launch are retained. Historical failed task 0mwqve4tna3qtln1o13 and its unknown initiating actor remain under EI-29432690132011534."
+  },
+  "qualityReview": {
+    "originalArtifact": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+    "sha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3",
+    "windowStart": "2026-10-03T05:21:32.561Z",
+    "windowEnd": "2026-10-05T20:27:24.000Z",
+    "eligible": 4,
+    "target": 8,
+    "shortfall": 4,
+    "recordedRequesterDecisions": 2,
+    "unknownRequesterDecisions": 2,
+    "ordinaryRequesterEvidence": [
+      "plan-revision:70136",
+      "thread-post:1157515",
+      "EI-25171788938691287"
+    ],
+    "independentReplication": "docs/evidence/get-feedback-r6-original-replication-2026-10-12.json",
+    "supplementalReview": {
+      "artifact": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-26.json",
+      "sha256": "d1f18136eddd93e2af48e9af4baf10894f7f41deff048dc39384084aeeb8ce73",
+      "cutoff": "2026-10-26T19:32:28.176Z",
+      "selectionSqlSha256": "1b5b2a3609c86909c4557bba5027b8916fae136c4df47115b7c4896761193e58",
+      "selectedThreads": 8,
+      "citedPostsChecked": 17,
+      "reference": "thread-post:1241006"
+    },
+    "scope": "Original selection, later requester provenance and independent replication keep their original verdicts. The separate October 26 review covers eight rubric consultations. Both November native requests were controlled trials."
+  },
+  "assertions": [
+    {
+      "id": "matrix:claude-ended-to-codex-conversion",
+      "passed": true,
+      "evidence": "Invocation 51060792, delivered port d98cad3a-24e6-4b99-a011-f83bc6f8cb0f, persisted kickoff, typed answer 1241014 and requester close 1241015."
+    },
+    {
+      "id": "matrix:codex-live-to-codex-session-port",
+      "passed": true,
+      "evidence": "Invocation 51061209, delivered port bc6d190c-9ad0-4923-aa23-c77935d87140, persisted kickoff, typed answer 1241018 and answering-session close 1241019."
+    },
+    {
+      "id": "matrix:claude-ended-to-claude-fork",
+      "passed": false,
+      "evidence": "Probe 51060728 confirmed zero eligible Claude targets. No current Claude fork and answer were measured."
+    },
+    {
+      "id": "cohort:original-quality-review",
+      "passed": false,
+      "evidence": "The immutable original cohort selected four of eight. The later provenance and supplemental eight-thread review retain separate scope."
+    }
+  ]
+}
