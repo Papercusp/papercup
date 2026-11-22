@@ -457,7 +457,7 @@ describe('POST /agent-mcp/tool-guard', () => {
     } finally { clock.mockRestore(); log.mockRestore(); }
   });
 
-  it('links bounded completed database timings to the exact aborted guard request while preserving refusal', async () => {
+  it('links bounded database timings to the exact aborted guard attempt when a request ID is reused', async () => {
     let now = 0;
     const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
     const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -470,6 +470,10 @@ describe('POST /agent-mcp/tool-guard', () => {
       context: capturePgDiagnosticContext(),
     });
     withNamedQueryDiagnosticContext('unrelated-request', () => record('org-admin-priority', 999));
+    withNamedQueryDiagnosticContext('native-tool-guard', () => {
+      record('org-admin-priority', 998);
+      record('org-app-priority', 997);
+    }, guardRequestId);
     planExecutionGuard.mockImplementation(async () => {
       expect(capturePgDiagnosticContext()).toMatchObject({
         state: 'linked', correlation: { requestId: guardRequestId, operation: 'native-tool-guard' },
@@ -505,7 +509,7 @@ describe('POST /agent-mcp/tool-guard', () => {
         queryLeg: 'plan-readiness-fence',
       })]);
       expect(JSON.stringify(log.mock.calls)).not.toContain(NEVER_EMIT_MARKER);
-      expect(JSON.stringify(log.mock.calls)).not.toContain('999');
+      expect(JSON.stringify(diagnostic.pgTimings)).not.toMatch(/"queryId":99[789]/);
     } finally { clock.mockRestore(); log.mockRestore(); }
   });
 

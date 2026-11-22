@@ -81,26 +81,28 @@ const REQUEST_CONTEXT = pinModuleState(
 /** The route passes only a registry-confirmed name, or null for an unknown operation. */
 export function withNamedQueryDiagnosticContext<T>(
   operation: string | null,
-  fn: (requestId: string) => T,
+  fn: (requestId: string, attemptId: string) => T,
   requestIdOverride?: string | null,
 ): T {
   // The MCP proxy trace is already validated at the transport boundary. Keep
   // the seam strict too, so an arbitrary caller cannot turn request metadata
   // into a retained correlation token.
+  // A transport request ID can be reused across independent computations.
+  const attemptId = randomUUID();
   const requestId = typeof requestIdOverride === 'string' && /^[a-f0-9-]{36}$/i.test(requestIdOverride)
     ? requestIdOverride
-    : randomUUID();
+    : attemptId;
   return REQUEST_CONTEXT.run(Object.freeze({
     ...pgDiagnosticIdentity(),
     rowId: null,
-    attemptId: requestId,
+    attemptId,
     hopId: null,
     stage: null,
     boundary: null,
     requestId,
     diagnostics: { stages: [], omittedStages: 0 },
     ...(operation ? { operation } : {}),
-  }), () => fn(requestId));
+  }), () => fn(requestId, attemptId));
 }
 
 /** Add a source-owned leg label to one query while preserving the request identity. */

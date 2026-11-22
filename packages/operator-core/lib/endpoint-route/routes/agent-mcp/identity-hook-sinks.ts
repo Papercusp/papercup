@@ -111,8 +111,8 @@ export function guardRefusalText(verdict: GuardVerdict): string {
   return `Refused by identity ${verdict.identityId} rule ${verdict.ruleId}: ${verdict.reason}`;
 }
 
-/** Same-request completed results only; neither timing is pure SQL or CPU time. */
-function toolGuardPgTimings(requestId: string) {
+/** Completed results from this computation; neither timing is pure SQL or CPU time. */
+function toolGuardPgTimings(requestId: string, attemptId: string) {
   try {
     return {
       coverage: 'retained-completed-results-only',
@@ -120,7 +120,8 @@ function toolGuardPgTimings(requestId: string) {
       timing: 'query-build-to-terminal-not-acquisition',
       pools: ['org-admin-priority', 'org-app-priority'].map(pool => {
         const snapshot = pgResultDiagnosticSnapshot(pool);
-        const matched = snapshot.results.filter(query => query.correlation?.requestId === requestId);
+        const matched = snapshot.results.filter(({ correlation }) =>
+          correlation?.requestId === requestId && correlation.attemptId === attemptId);
         return {
           pool, capacity: snapshot.capacity, poolDroppedResults: snapshot.dropped,
           omittedMatched: Math.max(0, matched.length - 8),
@@ -358,6 +359,7 @@ const toolGuard = defineTool({
     const setupMs = performance.now() - startedAt;
     let text;
     let joinedInFlight = false;
+    let guardAttemptId: string | undefined;
     let requestAcquireSnapshot: typeof pgAcquireTimingSnapshot = () => null;
     let acquisitionSnapshotRead = false;
     let acquisitionSnapshot: PgAcquireTimingSnapshot | null = null;
@@ -386,7 +388,10 @@ const toolGuard = defineTool({
           // Finally resumes outside this context; late callbacks may run in a
           // different request too. Retain the originating request, not its caller.
           requestAcquireSnapshot = AsyncLocalStorage.bind(pgAcquireTimingSnapshot);
-          return withNamedQueryDiagnosticContext('native-tool-guard', run, guardRequestId);
+          return withNamedQueryDiagnosticContext('native-tool-guard', (_requestId, attemptId) => {
+            guardAttemptId = attemptId;
+            return run();
+          }, guardRequestId);
         })
         : run();
       const fingerprint = guardRequestId ? toolGuardFingerprint(ownerId, workspaceId, body) : null;
@@ -444,7 +449,8 @@ const toolGuard = defineTool({
         ...(pendingPlanStages.size ? { pendingPlanStages: Array.from(pendingPlanStages.values(),
           ({ stage, startedAtMs }) => ({ stage, elapsedMs: Math.round(observedAtMs - startedAtMs) })) } : {}),
         ...(Object.keys(identityStages).length ? { identityStages } : {}),
-        ...(guardRequestId ? { pgTimings: toolGuardPgTimings(guardRequestId),
+        ...(guardRequestId && guardAttemptId ? { guardAttemptId,
+          pgTimings: toolGuardPgTimings(guardRequestId, guardAttemptId),
           pgAcquisitions: toolGuardPgAcquisitions(readAcquireSnapshot) } : {}),
       }));
     }

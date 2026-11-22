@@ -2189,9 +2189,9 @@ describe('phase binding writer census', () => {
     const bytes = readFileSync(new URL('../../../../' + path, import.meta.url));
     const hash = (data: Buffer) => createHash('sha256').update(data).digest('hex');
     const members: Array<{ path: string; sha256: string; type: string | null | undefined }> = [];
-    const archive = extractTar();
+    const archive = extractTar() as ReturnType<typeof extractTar> & import('node:stream').Writable;
     const decoded = new Promise<void>((resolve, reject) => {
-      archive.on('entry', (header, stream, next) => {
+      archive.on('entry', (header: import('tar-stream').Header, stream: import('node:stream').Readable, next: () => void) => {
         const chunks: Buffer[] = [];
         stream.on('data', (chunk: Buffer) => chunks.push(chunk));
         stream.on('error', reject);
