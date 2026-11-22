@@ -769,7 +769,8 @@ describe('original authority context fidelity', () => {
   });
 
   it('retains original harness/run/chunk/spawn instead of substituting the item scope', async () => {
-    const ctx = await admissionReplayContext(db.sql, { ...scope, workItemId: 'WI-context' }, 'requester', {
+    const callerScope = { ...scope, workItemId: 'WI-context' };
+    const ctx = await admissionReplayContext(db.sql, callerScope, 'requester', {
       kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 0, context: originalContext,
       credentialSha256: admissionCredentialDigest(Buffer.alloc(32, 42)),
     });
@@ -777,7 +778,8 @@ describe('original authority context fidelity', () => {
   });
 
   it('refuses credential-only legacy bindings rather than inventing quota context', async () => {
-    await expect(admissionReplayContext(db.sql, { ...scope, workItemId: 'WI-context' }, 'requester', {
+    const callerScope = { ...scope, workItemId: 'WI-context' };
+    await expect(admissionReplayContext(db.sql, callerScope, 'requester', {
       kind: 'superuser', role: 'operator', credentialSha256: admissionCredentialDigest(h.suToken),
     })).rejects.toThrow('original dispatch context missing');
   });

@@ -9214,8 +9214,9 @@ describe('work_items:complete input coercion (EI-7031)', () => {
           expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
         } else {
           expect(stateOpts().completionAuthority).toBe(authority);
-          expect(stateOpts().completionEvidence.filesChanged ?? []).toEqual([]);
-          expect(stateOpts().completionEvidence.workOutcome).toBe('verified-existing');
+          const completionEvidence = stateOpts().completionEvidence as Record<string, unknown>;
+          expect(completionEvidence.filesChanged ?? []).toEqual([]);
+          expect(completionEvidence.workOutcome).toBe('verified-existing');
         }
       },
     );

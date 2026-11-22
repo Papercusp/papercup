@@ -273,7 +273,7 @@ describe('runSyncLintGuardTick', () => {
     const restored = JSON.parse(JSON.stringify(first.state.value)) as SyncLintGuardState;
     const next = fake({ head: 'h2', prior: restored,
       runs: { [script]: setIntervalRed([...paths].reverse().concat('apps/new/decisive.ts')) },
-      batches: [{ sha: 'b2', agent: 'su-author', paths: [...paths, 'apps/new/decisive.ts'] }] });
+      batches: [{ sha: 'b2', committedAtMs: 900_000, agent: 'su-author', paths: [...paths, 'apps/new/decisive.ts'] }] });
     await runSyncLintGuardTick(next.deps, { scripts: [script] });
     expect(next.filed.map(finding => finding.conditionKey)).toEqual([
       `sync-delta-guard:${script}:apps/new/decisive.ts`,
