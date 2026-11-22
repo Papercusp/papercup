@@ -830,7 +830,7 @@
         },
         {
           "path": "packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts",
-          "sha256": "78d78316643b7d72343d09c967c0f5b4168373bd0b14815b6212da73d092c7f3"
+          "sha256": "eec3d495678052fc5b37984073f41603a81543d55419d58e8ee7d83e8a8434b6"
         },
         {
           "path": "packages/operator-core/lib/agent-tools/db-diagnostic-stamp-wiring.ts",
@@ -914,7 +914,7 @@
         },
         {
           "path": "packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts",
-          "sha256": "78d78316643b7d72343d09c967c0f5b4168373bd0b14815b6212da73d092c7f3"
+          "sha256": "eec3d495678052fc5b37984073f41603a81543d55419d58e8ee7d83e8a8434b6"
         },
         {
           "path": "packages/operator-core/lib/agent-tools/db-diagnostic-stamp-wiring.ts",
@@ -5395,8 +5395,9 @@
       "reason": "Grants, replaces or renews execution authority; source classification does not supply a verified transactional guard or real race matrix."
     },
     {
-      "siteId": "[\"packages/operator-core/lib/work-items.ts\",\"claimNextIssueWorkItem::<callback>::<callback>::<callback>::<callback>\",\"sql\",\"8e99d6b933d26b9f55735c0abcbb86e67d3fa6a432cb5fa3a0bf881a389a45b1\"]#1",
-      "reason": "Issue self-selection sets taken_by on the selected base work_items row. The selected row and current phase authority must be verified together at this transaction boundary."
+      "siteId": "[\"packages/operator-core/lib/work-items.ts\",\"claimNextIssueWorkItem::<callback>::<callback>::<callback>::<callback>\",\"sql\",\"afdfeaa2fcf6d1db4f3162d7948fca92530c7239101b9d17779e8b713608b36c\"]#1",
+      "previousSiteId": "[\"packages/operator-core/lib/work-items.ts\",\"claimNextIssueWorkItem::<callback>::<callback>::<callback>::<callback>\",\"sql\",\"8e99d6b933d26b9f55735c0abcbb86e67d3fa6a432cb5fa3a0bf881a389a45b1\"]#1",
+      "reason": "Issue self-selection sets taken_by on the selected base work_items row. Commit 374082ba79c changed the cooldown fragment to pass claimant fleet scope. The selected row and current phase authority must be verified together at this transaction boundary."
     },
     {
       "siteId": "[\"packages/operator-core/lib/work-items.ts\",\"claimNextWorkItem::claimFeatureRow::<callback>\",\"sql\",\"a94359d90609f94a665930df1be2d0774d1d6024d26a7a275c6d22cc1c111717\"]#1",
