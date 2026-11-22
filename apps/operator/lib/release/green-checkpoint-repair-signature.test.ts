@@ -754,6 +754,7 @@ describe("P-006 verifyRepairHead — the typed signature drives the runners, at 
       ].join("\n"));
       expect(radius).toEqual({
         files: [],
+        fileSelection: "full",
         coverageComplete: false,
         gateIds: [
           "@papercusp/operator-core :: test:lane-pure",
@@ -796,6 +797,7 @@ describe("P-006 verifyRepairHead — the typed signature drives the runners, at 
       ].join("\n"))).toEqual({
         files: [{ workspace: "@papercusp/operator-core", file: "lib/x.test.ts" }],
         gateIds: [],
+        fileSelection: "selected",
         coverageComplete: false,
         widenedTasks: 0,
         summary: "1 exact related file(s), 0 widened affected test task(s), 0 guard/task leg(s)",

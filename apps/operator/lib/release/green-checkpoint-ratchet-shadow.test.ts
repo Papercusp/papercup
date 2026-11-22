@@ -41,6 +41,7 @@ function repoWith(files: Record<string, string>) {
 const exactRadius = (files: string[]): RepairHeadRadius => ({
   files: files.map((file) => ({ workspace: "w", file })),
   gateIds: [],
+  fileSelection: "selected",
   coverageComplete: true,
   widenedTasks: 0,
   summary: "exact",
@@ -104,6 +105,36 @@ describe("shadowComposedProofAtRepairHead (P-018 shadow)", () => {
       nowMs: 1,
     });
     expect(widened.record).toMatchObject({ status: "planned", mode: "full-gate" });
+  });
+
+  const emptyCensus = "AFFECTED_DERIVATION source=explicit workspaces=0 tasks=0 guards=0";
+  const selectedEmpty = parseRepairHeadRadius(emptyCensus + "\nRELATED_AFFECTED_FILES status=selected workspaces=0 files=0");
+  const fullEmpty = parseRepairHeadRadius(emptyCensus + "\nRELATED_AFFECTED_FILES status=full reason=no-complete-exact-file-radius");
+  const selectedFile = parseRepairHeadRadius([
+    "AFFECTED_DERIVATION source=explicit workspaces=1 tasks=1 guards=0",
+    "AFFECTED_WS\t@x/core",
+    "AFFECTED_WS_CMD\t@x/core\tnpm run --workspace @x/core test",
+    "RELATED_SELECTION ws=@x/core selected=1 total=2 mode=related reason=ok",
+    "RELATED_AFFECTED_FILES status=selected workspaces=1 files=1",
+    "RELATED_AFFECTED_FILE\t@x/core\tsrc/a.test.ts",
+  ].join("\n"));
+  it.each<[string, RepairHeadRadius | null, string]>([
+    ["an explicitly selected file", selectedFile, "composed"],
+    ["a selected marker without any files", selectedEmpty, "full-gate"],
+    ["full selection with no named test task", fullEmpty, "full-gate"],
+    ["legacy radius without a selection verdict", selectedFile && { ...selectedFile, fileSelection: undefined }, "full-gate"],
+    ["missing census", selectedFile && { ...selectedFile, coverageComplete: undefined }, "full-gate"],
+    ["missing widening count", selectedFile && { ...selectedFile, widenedTasks: undefined }, "full-gate"],
+  ])("honors the selector file verdict for a runtime change with %s", async (_label, radius, mode) => {
+    expect(radius).not.toBeNull();
+    const { root, candidate, commit } = repoWith({ "src/a.ts": "export const a = 1;\n" });
+    const repairHead = commit({ "src/a.ts": "export const a = 2;\n" });
+    const shadow = await shadowComposedProofAtRepairHead({
+      proofContext, root, repairHead, nowMs: 1,
+      queue: { candidate, convergenceRounds: [{ round: 1, head: candidate, failingCount: 0, failingTests: [], atMs: 1 }] },
+      affectedTestsAtRef: async () => radius,
+    });
+    expect(shadow.record).toMatchObject({ status: "planned", mode });
   });
 
   it("skips when no round-1 failing set is recorded at the frozen candidate", async () => {
