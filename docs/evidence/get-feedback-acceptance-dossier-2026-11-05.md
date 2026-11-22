@@ -1,5 +1,13 @@
 # Get-feedback acceptance dossier
 
+## November 22 private operator verification at 04:32 UTC
+
+The public `consult:routing-health` call passed on private source snapshot `870b64296c436d415e88189ab138e8585494e109`. The SDK used the operator’s exported MCP URL on port `44703`. The startup record and the response both identified PID `2465233`. In the disposable workspace the API scanned zero consultations, reported no truncation and returned `totals.cancelledDuringBoot = 0`. The caller exited successfully and the harness confirmed teardown. The bundle SHA-256 was `20027c286d79c624158d57ada60bd9b3f548f74fa215e44474b71367c4b41021`. The build fence compared 7,713 inputs and recorded no mismatches. The ten changed production files and seven focused test files matched the earlier tested source. Work-item `EI-29432690132011534`, post `1241151`, identifies the retained response and its digest.
+
+The two real-process tests in run `24252120` establish how the public field should behave with data. One authenticated close delivered SIGTERM to the enrolled child and counted as one cancellation. An independent exit with code 23 during close counted as one launch failure. The historical November 21 attempt still has no proven signal sender.
+
+Staging on port `3170` served `0f8ea1d093556b3528f34bc3ff24d8cc33215908` after its restart. Its public health call returned from PID `2389194`. Eight of the ten production files matched the tested snapshot. The staging close handler still lacked signal-delivery capture, and the core close path still lacked persistence of the task-stop receipts. A fresh D-040 native matrix requires a build containing both. At 04:25 UTC, read-only provider check `51079070` found zero confirmed Claude routes among seven accounts. Five returned HTTP 400 without a usable capacity reading and two returned HTTP 429. Ordinary independent acceptance, the rubric author’s decision and the R7 production checks remain open. [Staging test instructions](/reports?sel=rpt_87c4cfb4-ac09-49fb-b454-42637362369c)
+
 ## November 22 cancellation and usefulness checks
 
 Staging on port `3170` is open for user testing. The latest registered native trial, `24246918`, passed both Codex-target deliveries and failed the Claude fork and original usefulness-sample assertions. At 03:42 UTC the normal Claude capacity probe `51076702` found zero serving accounts among seven. Five returned HTTP 400 without a usable capacity reading and two returned HTTP 429. A fresh D-040 matrix on the build containing the cancellation change, independent acceptance, the rubric author’s decision, and verification of the promoted release are still outstanding.
