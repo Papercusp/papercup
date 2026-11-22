@@ -1,5 +1,25 @@
 # Get-feedback acceptance dossier
 
+## November 22 native trials on the build containing the cancellation fix
+
+Staging served `2f9c664e11af310f4c5393f01083cb2025d1b550` on port `3170`. The process (PID `3551128`), bundle and build receipt matched before and after the trials. The serving checkout matched all ten production files from the verified private build. Comparison of the 18 native source files with the previous trial found one changed file, `consult-dispatch.ts`. The checker regression matched.
+
+| Native route | Observed result |
+| --- | --- |
+| Archived Claude source to Codex | Request `51080506` delivered a persisted port and returned a 2,249-character typed answer in post `1241176`. The answering session closed the thread in post `1241177`. |
+| Live Codex source to Codex | Request `51080650` delivered a persisted port and returned a 2,533-character typed answer in post `1241179`. The answering session closed in post `1241180`. The source file retained its device, inode and complete 2,758,267-byte prefix. |
+| Archived Claude source to Claude | Normal capacity check `51080458` confirmed zero serving Claude accounts among seven. Five returned HTTP 400 without a usable reading and two returned HTTP 429. The fork has no receipt for this round. |
+
+The first close interrupted a secondary task during startup. The delivered SIGTERM and recorded exit shared control request `dec8f158-ae1b-4d27-8b97-456b00f3ea33` and task `0mwrdi0bm1rickvnxkt`. Public health invocation `51080818` counted two launches, two answers, one startup cancellation and zero failures in the fixed window. Both requests had unknown structured requester follow-through. These controlled trials add no natural-work consultations. The historical November 21 signal sender remains unknown. [Fresh trial evidence](get-feedback-native-2f9c664e11af-2026-11-22.json)
+
+The evidence parser accepted two passing and two failing assertions. Ordinary registration and new R6 evidence bindings are pending. Earlier registered row `24246918` retains its own verdict. The October 3–5 cutoff contains four of eight targeted consultations. The October 10 review selected eight of eleven and rated six useful and two contradictory. The October 26 review selected eight of 371 eligible threads. Its November verification checked 17 cited posts. Independent acceptance, the author decision and the production shipment checks remain open.
+
+### Committed-source regression and requester sample
+
+The verifier froze the API regression at `1f3d6ba4c10ef50d6e7961790c2cd7cc8322277b`. Its dependency watchdog stopped the second `node_modules` copy before Vitest collected the case. The phase journal records cleanup, and the test ledger returned zero runs for this file after the attempt began at 05:07 UTC. The new assertion still needs a committed-source result. The cancellation fix itself reached committed completion on `EI-29432690132011534`. Parent work item `WI-6554700010046171`, post `1241195`, identifies the log, the phase journal and the separate private SDK and staging results.
+
+At the 05:10:53.707670 UTC trial cutoff, this requester had nine consultations with typed replies across the recorded work since October 3. Matching the conversation IDs to the five November 21–22 trial artifacts identified all nine as controlled trials. This requester supplied no additional natural-work sample at that cutoff. The October 10 study retains its own eight selected conversations and eight requester decisions. [October 10 review](get-feedback-reliability-usefulness-adoption-2026-10-03-quality-review-2026-10-10.json)
+
 ## November 22 private operator verification at 04:32 UTC
 
 The public `consult:routing-health` call passed on private source snapshot `870b64296c436d415e88189ab138e8585494e109`. The SDK used the operator’s exported MCP URL on port `44703`. The startup record and the response both identified PID `2465233`. In the disposable workspace the API scanned zero consultations, reported no truncation and returned `totals.cancelledDuringBoot = 0`. The caller exited successfully and the harness confirmed teardown. The bundle SHA-256 was `20027c286d79c624158d57ada60bd9b3f548f74fa215e44474b71367c4b41021`. The build fence compared 7,713 inputs and recorded no mismatches. The ten changed production files and seven focused test files matched the earlier tested source. Work-item `EI-29432690132011534`, post `1241151`, identifies the retained response and its digest.
