@@ -1373,8 +1373,17 @@ async function diskConsumerCensusTick(): Promise<DiskConsumerCensusWorkflowRecei
         const outcome = await censusOneDevice(pass, device, { runDu: detachedCensusWalker(runKey) });
         if (!outcome.run) {
           const receipt = censusDeviceStepReceipt(device.device, outcome);
-          console.warn('[disk-consumer-census] ' + receipt.device + ' failed: ' +
-            (receipt.outcome === 'failed' ? receipt.error : receipt.reason));
+          switch (receipt.outcome) {
+            case 'failed':
+              console.warn('[disk-consumer-census] ' + receipt.device + ' failed: ' + receipt.error);
+              break;
+            case 'unknown':
+              console.warn('[disk-consumer-census] ' + receipt.device + ' has unknown outcome: ' + receipt.reason);
+              break;
+            case 'recorded':
+              console.warn('[disk-consumer-census] ' + receipt.device + ' returned a recorded receipt without a census run');
+              break;
+          }
           return receipt;
         }
         const run = outcome.run;
