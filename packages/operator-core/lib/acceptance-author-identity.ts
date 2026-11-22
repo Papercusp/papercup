@@ -109,26 +109,18 @@ function identityEdges(sql: Sql, workspaceId: string) {
                   WHERE routed.to_id = adv_sessions.coord_owner_id
                )
         UNION
-        SELECT parent_spawn_id, spawn_id
-          FROM harness_shared.spawned_agents
-         WHERE workspace_id = ${workspaceId}
-           AND NULLIF(parent_spawn_id, '') IS NOT NULL
-        UNION
-        SELECT parent_spawn_id, session_owner
-          FROM harness_shared.spawned_agents
-         WHERE workspace_id = ${workspaceId}
-           AND NULLIF(parent_spawn_id, '') IS NOT NULL
-           AND NULLIF(session_owner, '') IS NOT NULL
-        UNION
-        SELECT spawn_id, session_owner
-          FROM harness_shared.spawned_agents
-         WHERE workspace_id = ${workspaceId}
-           AND NULLIF(session_owner, '') IS NOT NULL
-        UNION
-        SELECT session_owner, spawn_id
-          FROM harness_shared.spawned_agents
-         WHERE workspace_id = ${workspaceId}
-           AND NULLIF(session_owner, '') IS NOT NULL
+        -- Expand both parent edges and both session aliases from each row in one scan.
+        SELECT edge.from_id, edge.to_id
+          FROM harness_shared.spawned_agents AS agent
+          CROSS JOIN LATERAL (VALUES
+            (NULLIF(agent.parent_spawn_id, ''), agent.spawn_id),
+            (NULLIF(agent.parent_spawn_id, ''), NULLIF(agent.session_owner, '')),
+            (agent.spawn_id, NULLIF(agent.session_owner, '')),
+            (NULLIF(agent.session_owner, ''), agent.spawn_id)
+          ) AS edge(from_id, to_id)
+         WHERE agent.workspace_id = ${workspaceId}
+           AND edge.from_id IS NOT NULL
+           AND edge.to_id IS NOT NULL
         UNION
         -- P-004: the CONSULT-DISPATCH edge — a routed expert to the identity
         -- that answers FROM their transcript.

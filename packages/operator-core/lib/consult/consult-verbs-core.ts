@@ -41,6 +41,7 @@
 import type { Sql, TransactionSql } from 'postgres';
 import { isDeepStrictEqual } from 'node:util';
 import type { PostResult } from '../agent-tools/coordination/conversations-core';
+import type { ExpirySweepDeps } from './consult-expiry-core';
 import { consultParkKey as parkKey } from './get-feedback-core';
 import {
   advanceCascade,
@@ -135,12 +136,7 @@ export interface ConsultVerbDeps {
   /** Stop the currently dispatched answerer when another participant closes
    * the consult before that answerer has completed. Bound to the same
    * conversation-scoped task lookup used by the expiry sweep. */
-  stopAnsweringSession?: (opts: {
-    workspaceId: string;
-    conversationId: string;
-    answeringOwnerId: string | null;
-    sourceOwnerId: string;
-  }) => Promise<string>;
+  stopAnsweringSession?: ExpirySweepDeps['stopAnsweringSession'];
   /** Latched `consult:reply:<conv>` emit → the (possibly parked) requester.
    * Prod binds emitAwaitedEvent; best-effort there (never breaks the verb). */
   emitReplyEvent: (input: {
@@ -1434,7 +1430,27 @@ export async function consultCloseCore(
   // this exact conversation's answerer fails.
   if (obsoleteAnswerer && deps.stopAnsweringSession) {
     try {
-      const stopped = await deps.stopAnsweringSession(obsoleteAnswerer);
+      const stopped = await deps.stopAnsweringSession(obsoleteAnswerer, async (observation) => {
+        // Keep request and result independently. A crash between them leaves an
+        // attributable request with an unknown result. An accepted stop alone
+        // cannot establish why a concurrent launcher exited.
+        const { taskId, sourceOwnerId, answeringOwnerId, launchLogPath } = observation;
+        const key = `${postId}:${taskId}`;
+        const at = new Date().toISOString();
+        const entry = { conversationId: req.conversationId, closePostId: postId, closedBy: req.authorId,
+          taskId, sourceOwnerId, answeringOwnerId, launchLogPath,
+          ...(observation.phase === 'requested' ? { requestedAt: at } : {
+            completedAt: at, status: observation.status,
+            ...(observation.deliveredSignal ? { deliveredSignal: observation.deliveredSignal } : {}),
+            ...(observation.errorCode ? { errorCode: observation.errorCode } : {}),
+          }),
+        };
+        await sql`UPDATE harness_shared.consult_state SET outcome = jsonb_set(
+          COALESCE(outcome, '{}'::jsonb), '{closeTaskStops}',
+          COALESCE(outcome->'closeTaskStops', '{}'::jsonb) || jsonb_build_object(${key}::text,
+            COALESCE(outcome->'closeTaskStops'->(${key}::text), '{}'::jsonb) || ${sql.json(entry as never)}::jsonb))
+          WHERE workspace_id=${req.workspaceId} AND conversation_id=${req.conversationId}`;
+      });
       if (!stopped.startsWith('stopped task') && !stopped.includes('already gone')) {
         console.warn(`[consult-close] could not stop superseded answerer for ${req.conversationId}: ${stopped}`);
       }

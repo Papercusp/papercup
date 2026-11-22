@@ -268,6 +268,37 @@ it('extracts compact consult selections once with identical parties and fewer bu
   expect(Math.max(...accesses.compact)).toBeLessThan(Math.min(...accesses.original));
 }, 30_000);
 
+it('preserves spawn ancestry and session aliases with one spawned-agent scan', async () => {
+  await db.adminSql`
+    INSERT INTO harness_shared.spawned_agents
+      (spawn_id,workspace_id,harness_slug,parent_spawn_id,parent_role,child_role,run_id,status,session_owner)
+    VALUES
+      ('perf-child', ${workspaceId}, 'h-a', 'perf-parent', 'su', 'judge', 'run-perf-child', 'finished', 'perf-owner'),
+      ('perf-no-owner', ${workspaceId}, 'h-a', 'perf-parent', 'su', 'judge', 'run-perf-no-owner', 'finished', ''),
+      ('perf-foreign', 'p004-other', 'h-a', 'perf-parent', 'su', 'judge', 'run-perf-foreign', 'finished', 'perf-foreign-owner')
+  `;
+  const ids = ['perf-parent', 'perf-child', 'perf-owner', 'perf-no-owner', 'perf-foreign'];
+  expect(await lineagePartyKeys(ids, { sql: db.adminSql, workspaceId })).toEqual(new Map([
+    ['perf-parent', 'perf-parent'],
+    ['perf-child', 'perf-parent'],
+    ['perf-owner', 'perf-parent'],
+    ['perf-no-owner', 'perf-parent'],
+    ['perf-foreign', 'perf-foreign'],
+  ]));
+  expect(await areAcceptanceLineageRelated('perf-child', 'perf-owner', { sql: db.adminSql, workspaceId })).toBe(true);
+
+  await lineagePartyKeys(ids, { workspaceId, sql: withProjection(true, ({ Plan }) => {
+    const scans: Record<string, unknown>[] = [];
+    const visit = (node: Record<string, unknown>) => {
+      if (node['Relation Name'] === 'spawned_agents') scans.push(node);
+      for (const child of (node.Plans ?? []) as Record<string, unknown>[]) visit(child);
+    };
+    visit(Plan as Record<string, unknown>);
+    expect(scans).toHaveLength(1);
+    expect(scans[0]['Actual Loops']).toBe(1);
+  }) });
+}, 30_000);
+
 it('completes 100 frozen candidate lookups below 500ms p95 with parity and a cheaper measured edge scan', async () => {
   const candidates = ['chain-0','chain-2','consult-fork','sibling-a','sibling-b','cycle-a','cycle-b','foreign-child'];
   const expected = await lineagePartyKeys(candidates,{sql:withProjection(false),workspaceId});

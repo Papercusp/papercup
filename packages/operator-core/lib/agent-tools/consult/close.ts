@@ -89,7 +89,7 @@ export default defineTool({
         settleConversation: (input, tx) => conversations.settleConsultConversation(identity, input, tx),
         stopAnsweringSession: consultExpiryStopAnsweringSession({
           listLiveTasks: (workspaceId) => listLiveTasks(workspaceId),
-          killTask: (taskId) => killTask(taskId),
+          killTask: (taskId) => killTask(taskId, { captureSignalDelivery: true }),
         }),
         emitReplyEvent: async (e) => {
           await import('../../events/await/engine')

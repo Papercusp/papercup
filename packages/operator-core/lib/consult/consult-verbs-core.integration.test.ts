@@ -19,7 +19,9 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
@@ -33,7 +35,7 @@ import {
 } from './consult-verbs-core';
 import { advanceCascade, continueCascadeDispatchCore, makeDigestEntry } from './cascade-core';
 import { HARD_BLOCKED_EXPIRY_MS, PROCEED_EXPIRY_MS } from './get-feedback-core';
-import { acquireConsultSpawnLease, makeDeferredConsultReachDispatcher } from './consult-dispatch';
+import { acquireConsultSpawnLease, appendDispatchRecord, dispatchConsultResponder, makeDeferredConsultReachDispatcher } from './consult-dispatch';
 import { readConsultReview } from './review-findings';
 import { BAR_CRITIQUE_POLICY } from './selection-policies';
 import { mockOrgPgSql } from '../testing/mock-org-pg';
@@ -2170,10 +2172,20 @@ describe('cascade advance (D-005/P-013)', () => {
   it('a previously woken responder remains a participant and may close after advancing the cascade', async () => {
     const id = await seedConsult({ routing: menuSnapshot([RESPONDER, 'resp-2']) });
     const { deps } = makeDeps();
+    const { consultExpiryStopAnsweringSession } = await import('./consult-expiry-adapters');
+    const stop = consultExpiryStopAnsweringSession({
+      listLiveTasks: async () => ['live-task', 'exited-task'].map(taskId => ({
+        taskId, class: 'agent-session' as const, logPath: `/logs/${taskId}`,
+        detail: { consultAnswer: { conversationId: id, sourceOwnerId: 'resp-2', answeringOwnerId: 'resp-2-fork' } },
+      })),
+      killTask: async taskId => taskId === 'exited-task' ? { ok: false, error: 'already_gone' } : {
+        ok: true, deliveredSignal: { id: 'control-operation', pid: 12345, signal: 'SIGTERM' },
+      },
+    });
     const stopped: Parameters<NonNullable<ConsultVerbDeps['stopAnsweringSession']>>[0][] = [];
-    deps.stopAnsweringSession = async (target) => {
+    deps.stopAnsweringSession = async (target, observe) => {
       stopped.push(target);
-      return 'stopped task resp-2-fork';
+      return stop(target, observe);
     };
 
     const reply = await consultReplyCore(
@@ -2189,7 +2201,15 @@ describe('cascade advance (D-005/P-013)', () => {
     );
     if ('error' in close) throw new Error(close.error);
     expect(close.state).toBe('closed_answered');
-    expect((await stateRow(id)).state).toBe('closed_answered');
+    const row = await stateRow(id);
+    expect(row.state).toBe('closed_answered');
+    const receipt = { conversationId: id, closedBy: RESPONDER, closePostId: close.post_id, sourceOwnerId: 'resp-2',
+      answeringOwnerId: 'resp-2-fork', requestedAt: expect.any(String), completedAt: expect.any(String) };
+    expect(row.outcome).toMatchObject({ answer: 'settled', closeTaskStops: {
+      [`${close.post_id}:live-task`]: { ...receipt, taskId: 'live-task', launchLogPath: '/logs/live-task', status: 'accepted',
+        deliveredSignal: { id: 'control-operation', pid: 12345, signal: 'SIGTERM' } },
+      [`${close.post_id}:exited-task`]: { ...receipt, taskId: 'exited-task', launchLogPath: '/logs/exited-task', status: 'already_gone', errorCode: 'already_gone' },
+    } });
     expect(stopped).toEqual([{
       workspaceId: WS,
       conversationId: id,
@@ -2222,6 +2242,102 @@ describe('cascade advance (D-005/P-013)', () => {
     expect((await stateRow(id)).state).toBe('closed_answered');
     expect(stopped).toEqual([]);
   });
+
+  it.each(['close-signal', 'independent-exit'] as const)(
+    'accounts for an enrolled child during an authenticated close through the health reader (%s)', async scenario => {
+      const { spawnHeadless } = await import('../console-spawn');
+      const taskStore = await import('../task-manager/store');
+      const { getTask, listLiveTasks } = taskStore;
+      const events = await import('../task-manager/task-terminal-events');
+      const { killTask } = await import('../task-manager/control');
+      const { consultExpiryStopAnsweringSession } = await import('./consult-expiry-adapters');
+      const { readRoutingHealthRows, routingHealthFromRows } = await import('./consult-routing-health');
+      const org = await import('@papercusp/db-org');
+      const scopes = await import('../task-manager/managed-spawn');
+      const enabled = await import('../task-manager/enabled');
+      for (const migration of ['696-task-ledger.sql', '1225-consult-dispatch-attempts.sql']) {
+        await rootSql.unsafe(readFileSync(new URL(`../../../../libs/papercusp/libs/db/sql/${migration}`, import.meta.url), 'utf8'));
+      }
+      const id = await seedConsult({ routing: menuSnapshot([RESPONDER]) });
+      const dir = mkdtempSync(join(tmpdir(), 'consult-boot-close-'));
+      const orgPg = vi.spyOn(org, 'getOrgPg');
+      mockOrgPgSql(orgPg, rootSql);
+      const scope = vi.spyOn(scopes, 'scopeSupportKnown').mockReturnValue(null);
+      const enrollment = vi.spyOn(enabled, 'taskManagerEnabledSync').mockReturnValue(true);
+      // This bounded shell has no provider session. Capture terminal event delivery
+      // at its transport boundary while the real task ledger owns the terminal tuple.
+      const nativeSession = vi.spyOn(taskStore, 'bindAgentSessionTaskToLatestNativeSession').mockResolvedValue(null);
+      const terminalEvent = vi.spyOn(events, 'emitTaskTerminalEvent').mockResolvedValue(true);
+      const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let taskId: string | undefined;
+      try {
+        const { deps } = makeDeps();
+        deps.now = () => new Date();
+        deps.stopAnsweringSession = consultExpiryStopAnsweringSession({ listLiveTasks: ws => listLiveTasks(ws, rootSql),
+          killTask: async exact => {
+            expect(exact).toBe(taskId);
+            if (scenario === 'independent-exit') {
+              // The real launcher rejects while the authenticated close is in flight.
+              writeFileSync(join(dir, 'reject'), '1');
+              await vi.waitFor(async () => expect((await getTask(exact, rootSql))?.endedAt).toBeTruthy(), { timeout: 10_000 });
+            }
+            return killTask(exact, { captureSignalDelivery: true });
+          },
+        });
+        const result = await dispatchConsultResponder({ conversationId: id, sourceOwnerId: RESPONDER, brief: 'controlled boot' },
+          { workspaceId: WS, harnessSlug: 'papercusp', launchedBy: REQUESTER }, {
+            loadRanks: async () => [{ rank: 1, agent: 'claude', model: 'opus' }],
+            readReviewerModel: async () => null, readSourceDispatchRecords: async () => [],
+            resolveResumeTarget: async () => ({ ok: true, sessionId: 'fixture', resumeId: 'fixture', ompThreadId: null,
+              ownerId: RESPONDER, agent: 'claude', model: null, modelSource: null, cwd: dir, endedAt: null, endedBy: null,
+              live: true, advSessionId: 1, workspaceId: WS, harnessSlug: null, role: null, feature: null, account: null,
+              binding: { coordOwnerId: RESPONDER, sessionId: 'fixture', startedAt: NOW.toISOString() } }),
+            checkResumeTranscript: async () => ({ available: true, detail: 'fixture source' }),
+            fetchContextPressure: async () => new Map(), estimateTranscriptTokens: async () => null,
+            analyzeClaudeTranscript: () => null, probeBackendAvailable: async () => ({ available: true, detail: 'fixture capacity' }),
+            mintOwnerId: () => 'boot-answerer',
+            buildConsoleEnvelope: async () => ({ cwd: dir, env: {}, greetingCmd: '', mcpJsonContents: '{}',
+              needsSuperuserBootstrap: false, sessionId: 'fixture-window', workspaceId: WS }),
+            recordDispatchAttempts: record => appendDispatchRecord(rootSql, record, new Date().toISOString()),
+            spawnHeadless: options => spawnHeadless({ ...options, logDir: dir, writeMcpJson: false,
+              spawnCommandProbes: { hasSystemdRun: () => false },
+              envelope: { ...options.envelope, greetingCmd: 'touch ready; for i in {1..300}; do if test -f reject; then echo "psu: fixture startup failed" >&2; exit 23; fi; sleep 0.05; done; exit 24' },
+              onProcessCreated: async created => {
+                taskId = created.taskId;
+                await options.onProcessCreated?.(created);
+                await vi.waitFor(async () => {
+                  expect(existsSync(join(dir, 'ready'))).toBe(true);
+                  expect((await getTask(created.taskId, rootSql))?.processIdentity).toBeTruthy();
+                }, { timeout: 10_000 });
+                const closed = await consultCloseCore({ workspaceId: WS, authorId: REQUESTER, conversationId: id,
+                  outcome: 'cant_help', reason: 'The requester withdrew the question during startup.' }, deps);
+                expect(closed).toMatchObject({ ok: true, state: 'closed_cant_help' });
+              },
+            }),
+          });
+        expect(result.attempts[0]).toMatchObject({ outcome: 'failed', reason: 'launch-failed', bootTask: { taskId,
+          exit: scenario === 'close-signal' ? { signal: 'SIGTERM', code: null } : { signal: null, code: 23 } } });
+        const until = new Date(Date.now() + 1000);
+        const since = new Date(until.getTime() - 60_000);
+        const { rows } = await readRoutingHealthRows(rootSql, WS, since.toISOString(), until.toISOString());
+        const selected = rows.filter(row => row.conversation_id === id);
+        expect(selected).toHaveLength(1);
+        const health = routingHealthFromRows(selected, { sinceMs: +since, untilMs: +until, nowMs: +until });
+        expect(health.totals).toMatchObject(scenario === 'close-signal'
+          ? { failed: 0, cancelledDuringBoot: 1 } : { failed: 1, failedReasons: { 'launch-failed': 1 }, cancelledDuringBoot: 0 });
+        expect(nativeSession).toHaveBeenCalledWith(taskId);
+        await vi.waitFor(() => expect(terminalEvent).toHaveBeenCalledWith(expect.objectContaining({ taskId })));
+        expect(warnings.mock.calls).toEqual(scenario === 'close-signal' ? [] : [
+          [`[consult-close] could not stop superseded answerer for ${id}: stop of task ${taskId} refused: not_live`],
+        ]);
+      } finally {
+        try { if (taskId && !(await getTask(taskId, rootSql))?.endedAt) await killTask(taskId); }
+        finally {
+          warnings.mockRestore(); terminalEvent.mockRestore(); nativeSession.mockRestore();
+          enrollment.mockRestore(); scope.mockRestore(); orgPg.mockRestore(); rmSync(dir, { recursive: true, force: true });
+        }
+      }
+    }, 35_000);
 
   // WI-1700133: the VOID-consult exit. A responder who judges the QUESTION
   // void (duplicate, inadmissible, already settled) must be able to end the
