@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 
-// @ts-expect-error -- side-effect-free .mjs sibling of the CLI binary; no type declarations.
 import { buildCleanRoomInstanceCreateArgs } from '../../bin/gcp-clean-room-args.mjs';
 
 /**

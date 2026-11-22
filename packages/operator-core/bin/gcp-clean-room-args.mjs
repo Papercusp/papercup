@@ -60,6 +60,9 @@ function allowsSshTcp22(allowed) {
  * Pure on purpose: the whole point of the preflight is to be assertable without a cloud
  * call, and every one of the four ways a rule can silently fail to cover the clean room
  * (disabled, egress, wrong source range, tag-scoped elsewhere) is a data question.
+ * @param {unknown} rule
+ * @param {string} [tag]
+ * @returns {boolean}
  */
 export function iapSshRuleAdmits(rule, tag = CLEAN_ROOM_NETWORK_TAG) {
   if (!rule || rule.disabled === true) return false;
@@ -88,6 +91,8 @@ export function iapSshRuleAdmits(rule, tag = CLEAN_ROOM_NETWORK_TAG) {
  * This runs BEFORE the instance is created. Without it the identical misconfiguration costs
  * a billable VM plus the full 12-minute boot budget and then reports a message that sends
  * the reader to IAM instead of the firewall.
+ * @param {unknown} rules
+ * @param {{ networkName?: string, projectId?: string, tag?: string }} [options]
  */
 export function assertIapSshReachable(rules, { networkName, projectId, tag = CLEAN_ROOM_NETWORK_TAG } = {}) {
   if ((Array.isArray(rules) ? rules : []).some((rule) => iapSshRuleAdmits(rule, tag))) return;
@@ -117,6 +122,9 @@ export function assertIapSshReachable(rules, { networkName, projectId, tag = CLE
  * The predicate is pure so a malformed/mismatched response can be tested without a cloud
  * call. Callers should pass the router's observed region, not the requested region alone;
  * missing region evidence fails closed.
+ * @param {unknown} nat
+ * @param {{ subnetwork?: string, region?: string, routerRegion?: string }} [options]
+ * @returns {boolean}
  */
 export function cloudNatCoversSubnetwork(
   nat,
@@ -157,6 +165,8 @@ export function cloudNatCoversSubnetwork(
  * the bootstrap cannot install packages or download the public release bundle without NAT.
  * Booting first would spend the full VM budget and misreport the failure as an artifact or
  * guest problem.
+ * @param {unknown} nats
+ * @param {{ projectId?: string, networkName?: string, subnetwork?: string, region?: string }} [options]
  */
 export function assertCloudNatEgressReachable(
   nats,
@@ -209,6 +219,12 @@ function labelValue(value) {
  * pre-build bootstrap acceptance run (`bootstrap-acceptance`, boots stock Ubuntu). They are
  * indistinguishable in the GCP console otherwise, which matters precisely when auditing a
  * leaked instance to find out which run failed to tear itself down.
+ * @param {{
+ *   instanceName: string, projectId: string, zone: string, imageName: string,
+ *   imageProject: string, subnetwork?: string | null, fixtureId: string,
+ *   machineType?: string, role?: string
+ * }} options
+ * @returns {string[]}
  */
 export function buildCleanRoomInstanceCreateArgs({
   instanceName,

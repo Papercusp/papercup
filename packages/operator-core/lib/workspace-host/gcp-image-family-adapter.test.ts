@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -1289,6 +1290,42 @@ describe('GCP image-family production adapter', () => {
     });
     expect(compute.deprecations).toHaveLength(1);
     expect(compute.inserts[0]?.input.sourceImage).toBe(CANDIDATE_ID);
+  });
+});
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const original = await importOriginal<typeof import('node:child_process')>();
+  return { ...original, spawn: vi.fn(original.spawn) };
+});
+
+describe('NodeGcpImageFamilyCommandRunner stdin', () => {
+  const runner = new NodeGcpImageFamilyCommandRunner();
+  const childResult = { exitCode: 7, stdout: 'done', stderr: 'diagnostic' };
+  const writeFailure = { exitCode: 125, stdout: '', stderr: 'failed to write command input' };
+
+  it.each([
+    { label: 'omitted', stdin: undefined, expected: childResult },
+    { label: 'empty', stdin: '', expected: childResult },
+    { label: 'nonempty', stdin: 'payload', expected: writeFailure },
+  ])('handles a closed input pipe with $label stdin', async ({ stdin, expected }) => {
+    const original = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    vi.mocked(spawn).mockImplementationOnce((command, args, options) => {
+      const child = original.spawn(command, args, options);
+      // Deliver the pipe error before the real child's close event, regardless of scheduling.
+      child.stdin?.destroy(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+      return child;
+    });
+    const result = await runner.run({
+      command: '/bin/sh',
+      args: ['-c', 'printf done; printf diagnostic >&2; exit 7'],
+      stdin,
+    });
+    expect(result).toEqual(expected);
+  });
+
+  it.each(['', 'first line\nπ\n'])('delivers %j and closes stdin', async (stdin) => {
+    const result = await runner.run('/bin/cat', [], { stdin, timeoutMs: 5_000 });
+    expect(result).toEqual({ exitCode: 0, stdout: stdin, stderr: '' });
   });
 });
 

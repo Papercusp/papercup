@@ -20,7 +20,6 @@ import {
   buildCleanRoomInstanceCreateArgs,
   cloudNatCoversSubnetwork,
   iapSshRuleAdmits,
-  // @ts-expect-error -- side-effect-free .mjs argv builder, deliberately untyped
 } from "../../bin/gcp-clean-room-args.mjs";
 
 const BASE = {

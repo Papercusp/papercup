@@ -42,7 +42,6 @@ import { measureGcpBaseImage } from './gcp-base-image-identity';
 import {
   IAP_TCP_FORWARDING_SOURCE_RANGE,
   iapSshRuleAdmits,
-  // @ts-expect-error — plain .mjs helper has no declaration file; reuse its tested firewall semantics.
 } from '../../bin/gcp-clean-room-args.mjs';
 
 /** A shell-free command invocation used by the image, scanner, and clean-room seams. */
@@ -883,8 +882,13 @@ export class NodeGcpImageFamilyCommandRunner implements GcpImageFamilyCommandRun
         });
       }, timeoutMs);
       timer.unref?.();
-      child.stdin.on('error', () => finish({ exitCode: 125, stdout: '', stderr: 'failed to write command input' }));
-      child.stdin.end(actualOptions.stdin ?? '', 'utf8');
+      // A child can close stdin before we collect its exit status and output.
+      // With no payload, only EOF is owed and the child's result is authoritative.
+      const input = actualOptions.stdin || undefined;
+      child.stdin.on('error', () => {
+        if (input !== undefined) finish({ exitCode: 125, stdout: '', stderr: 'failed to write command input' });
+      });
+      child.stdin.end(input, 'utf8');
     });
   }
 
