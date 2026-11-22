@@ -339,6 +339,23 @@ function compactFleetMetrics(value: unknown): unknown {
  * retain their full comparison contract, and omitted identities, actions and
  * secondary metrics are recovered from the SAME snapshot's cursor.
  */
+export function compactLeaderBriefBindingForResultDoor(data: unknown): Dict | null {
+  const source = asDict(data);
+  if (!source) return null;
+  const summarySource = asDict(source.summary);
+  if (typeof summarySource?.planRef !== 'string') return null;
+  const summary = pick(summarySource, ['fleet', 'members'], 120) ?? {};
+  summary.planRef = summarySource.planRef;
+  return {
+    ok: source.ok === true,
+    summary,
+    leaderBriefProjection: {
+      tier: 'trimmed', emergency: true, detailOmitted: true,
+      fleetMetricsOmitted: true, recovery: '_projection.cursor', completeIndexesInCursor: true,
+    },
+  };
+}
+
 export function compactLeaderBriefForResultDoor(data: unknown): Dict | null {
   const source = asDict(data);
   if (!source) return null;
@@ -350,15 +367,7 @@ export function compactLeaderBriefForResultDoor(data: unknown): Dict | null {
     // Outside work has a binding even when the metric snapshot is absent or
     // unreadable. The result door already saved the complete source; keep that
     // identity intact instead of falling back to a field-blind prefix walk.
-    if (typeof summary.planRef !== 'string') return null;
-    return {
-      ok: source.ok === true,
-      summary,
-      leaderBriefProjection: {
-        tier: 'trimmed', emergency: true, detailOmitted: true,
-        fleetMetricsOmitted: true, recovery: '_projection.cursor', completeIndexesInCursor: true,
-      },
-    };
+    return compactLeaderBriefBindingForResultDoor(source);
   }
   const supervision = compactClaimabilitySupervision(summarySource?.claimability_supervision);
   if (supervision) summary.claimability_supervision = supervision;

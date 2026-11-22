@@ -238,6 +238,76 @@ describe('P-001 complete queue comparison and same-snapshot recovery', () => {
     expect(compactLeaderBriefForResultDoor({ ...source, fleetMetrics: { ok: true, snapshot: { remaining: { total: 0 } } } })).toBeNull();
   });
 
+  it.each([false, true].flatMap(nested => [-1, 0, 1].map(boundary => ({ nested, boundary }))))(
+    'preserves an outside binding at the wrapped preview boundary (nested=$nested, delta=$boundary)',
+    ({ nested, boundary }) => {
+      const directory = mkdtempSync(join(tmpdir(), 'outside-binding-door-'));
+      const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+      const previousOff = process.env.PAPERCUSP_RESULT_DOOR_OFF;
+      process.env.PAPERCUSP_SCRATCH_ROOT = directory;
+      delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+      try {
+        const baseline = oversizedBrief();
+        const planRef = '  tracker:"quoted"\n😀  ';
+        const source = {
+          self: { ownerId: 'outside-leader' },
+          agentObligations: { evidence: 'obligation before summary '.repeat(1_000) },
+          ...baseline,
+          summary: { ...baseline.summary, planRef },
+        };
+        const budget = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
+        const options = { toolName: nested ? 'tools:invoke' : 'fleet:leader-brief',
+          ...(nested ? { nestedTargetToolName: 'fleet:leader-brief' } : {}),
+          workspaceId: 'outside-binding-test', runId: '11111111-2222-4333-8444-555555555555' };
+        const emit = (): DoorableResult => applyResultDoor({ content: [{ type: 'text', text: JSON.stringify(source) }] }, options);
+        const wrappedBytes = (result: DoorableResult) => Buffer.byteLength(JSON.stringify({
+          ...compactLeaderBriefForResultDoor(source),
+          _partial: true,
+          _projection: { kind: 'bounded-payload', truncated: true, tier: 'trimmed', forced: true,
+            originalChars: JSON.stringify(source).length,
+            cursor: (result._meta?.resultDoor as { recoveryCursor: unknown }).recoveryCursor,
+            next: 'Full snapshot and indexes: cursor.' },
+        }));
+        let result = emit();
+        // Calibrate a valid fixture identity to the actual cursor/envelope size;
+        // the production budget, cursor and metric contract stay unchanged.
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const adjustment = budget + boundary - wrappedBytes(result);
+          if (adjustment === 0) break;
+          const scope = source.fleetMetrics.snapshot.scope;
+          scope.harness = 'h'.repeat(scope.harness.length + adjustment);
+          result = emit();
+        }
+        expect(fleetMetricsResultSchema.safeParse(source.fleetMetrics).success).toBe(true);
+        expect(wrappedBytes(result)).toBe(budget + boundary);
+        expect(Buffer.byteLength(JSON.stringify(compactLeaderBriefForResultDoor(source)))).toBeLessThan(budget);
+        const body = JSON.parse((result.content.find(part => part.type === 'text') as { text: string }).text);
+        expect(body.summary.planRef).toBe(planRef);
+        if (boundary > 0) {
+          expect(body).not.toHaveProperty('fleetMetrics');
+          expect(body.leaderBriefProjection).toMatchObject({ fleetMetricsOmitted: true,
+            detailOmitted: true, recovery: '_projection.cursor', completeIndexesInCursor: true });
+          expect(result._meta?.resultDoor).toMatchObject({ compactProjection: 'fleet:leader-brief-outside-binding' });
+        } else {
+          expect(body.fleetMetrics.snapshot.scope).toEqual(source.fleetMetrics.snapshot.scope);
+        }
+        expect(measureResultContextBytes(result)).toBeLessThanOrEqual(budget);
+        const spillPath = (result._meta?.resultDoor as { spillPath: string }).spillPath;
+        const reference = parseScratchReference(readFileSync(spillPath));
+        expect(reference).not.toBeNull();
+        const recovered = reference!.payload.subarray(body._projection.cursor.bodyOffsetInPayload).toString('utf8');
+        expect(recovered).toBe(JSON.stringify(source));
+        expect(JSON.parse(recovered).fleetMetrics).toEqual(source.fleetMetrics);
+      } finally {
+        if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+        else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
+        if (previousOff === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+        else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousOff;
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each([
     { toolName: 'fleet:leader-brief' },
     { toolName: 'tools:invoke', nestedTargetToolName: 'fleet:leader-brief' },

@@ -51,7 +51,7 @@ import { dirname } from 'node:path';
 import type { ScratchWriteTimings } from './scratch-gc';
 import { withBoundedTimeout } from './bounded-timeout';
 import { projectBoundedPayload, type BoundedPayloadRecovery, type BulkEnvelopeProjectionOpts } from '@papercusp/tooldef';
-import { compactLeaderBriefForResultDoor } from './agent-tools/fleet/leader-brief-shape';
+import { compactLeaderBriefBindingForResultDoor, compactLeaderBriefForResultDoor } from './agent-tools/fleet/leader-brief-shape';
 import { decode } from '@papercusp/result-encoding';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
@@ -4623,7 +4623,8 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       recovery?.cursor
       ? compactLeaderBriefForResultDoor(bodyShape.json!.parsed)
       : null;
-    const leaderBriefPreview = leaderBriefCore ? {
+    let leaderBriefBindingOnly = leaderBriefCore !== null && !('fleetMetrics' in leaderBriefCore);
+    let leaderBriefPreview = leaderBriefCore ? {
       ...leaderBriefCore,
       _partial: true,
       _projection: {
@@ -4632,6 +4633,17 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         next: 'Full snapshot and indexes: cursor.',
       },
     } : null;
+    if (leaderBriefPreview &&
+      Buffer.byteLength(JSON.stringify(leaderBriefPreview), 'utf8') > structuralTargetChars) {
+      // The numeric core may fit alone but overflow once its recovery cursor is
+      // attached. Preserve the outside identity before the generic prefix walk;
+      // complete metrics remain in that same cursor, explicitly omitted inline.
+      const binding = compactLeaderBriefBindingForResultDoor(bodyShape.json!.parsed);
+      if (binding) {
+        leaderBriefPreview = { ...binding, _partial: true, _projection: leaderBriefPreview._projection };
+        leaderBriefBindingOnly = true;
+      }
+    }
     const leaderBriefFits = leaderBriefPreview !== null &&
       Buffer.byteLength(JSON.stringify(leaderBriefPreview), 'utf8') <= structuralTargetChars;
     let projected: JsonObject = leaderBriefFits ? leaderBriefPreview! : projectBoundedPayload(
@@ -4724,8 +4736,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         resultDoor: {
           ...baseResultDoorMeta,
           structural: true,
-          ...(leaderBriefFits ? { compactProjection:
-            opts.toolName === 'work_items:burn_down' || opts.nestedTargetToolName === 'work_items:burn_down'
+          ...(leaderBriefFits ? { compactProjection: leaderBriefBindingOnly
+            ? 'fleet:leader-brief-outside-binding'
+            : opts.toolName === 'work_items:burn_down' || opts.nestedTargetToolName === 'work_items:burn_down'
               ? 'work_items:burn_down-numeric-core' : 'fleet:leader-brief-numeric-core' } : {}),
           ...(releaseRepairQueueCompactBody != null
             ? { compactProjection: 'release:repair-queue:signature-evidence' }
