@@ -1,5 +1,37 @@
 # Get-feedback acceptance dossier
 
+## November 22 staging remeasurement
+
+**The consult router is available for user testing on staging, port `3170`.** Both fresh Codex-target trials returned substantive answers. The Claude fork remains open. The operator served commit `748009ebdaf61c1e8bd7e24c434128b27ffcdaf0` with bundle SHA-256 `66a5cdf16dd32b0c9ead927444590354bbb7b9b202b59bca9f211f7b6fece90a`. The process and bundle matched before and after the trials. [Staging test instructions](/reports?sel=rpt_87c4cfb4-ac09-49fb-b454-42637362369c)
+
+| Requested path | Result on this build |
+| --- | --- |
+| Archived Claude source to Codex | Request 51060792 produced typed answer 1241014. The requester applied the answer to the checkout-isolation decision and closed in post 1241015. A second native session also received the request. Its reply validation failed and it had no accepted answer at closure. |
+| Live Codex source to Codex | Request 51061209 produced typed answer 1241018. The answering session closed in post 1241019. The source file retained its device, inode and complete 2,758,267-byte prefix through the follow-up check. |
+| Archived Claude source to Claude | Read-only probe 51060728 found zero confirmed eligible Claude targets. Two responses were HTTP 429. Five were HTTP 400 without usable rate information. The round has no Claude-fork receipt or recovery time. |
+
+The native source and delivered port hashes matched. The recorded work-item and plan-claim sets were empty at both endpoints. Changes between those readings remain unknown. During the fixed window, the health reader counted three launches and three answered outcomes. Its writer credits a close to the launch current at closure. The two controlled conversations contain two distinct authors of typed answers. The artifact records each of the three rejected reply calls and retains the earlier failed rank's unresolved cause. [Trial evidence](get-feedback-native-748009ebdaf6-2026-11-22.json)
+
+The repaired checker verified both historical Codex deliveries in run 24236112. The unavailable historical fork and the full-matrix assertion failed. Legacy replay 24236133 also verified both ports. It matched the original 6,549-character fork answer and rejected its current expired state. The maintained regression run 24233321 passed 30 cases with zero skips on a dirty working tree. The committed checker and test blobs matched the staging checkout.
+
+The original October 3–5 usefulness sample contains four of the target eight consultations. Two requester decisions were unknown at its cutoff. The later requester-provenance addendum and the independent replication retain their respective findings. For the separate October 26 rubric-review cohort, replay of its frozen selection matched eight conversations in order. All nine cited answer posts and eight requester posts matched their authors and threads. These November trials were excluded from both samples. [October 26 review](get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-26.json)
+
+At the end of this measurement, the candidate still needed independent verification and grading, the rubric author's decision, and a changed-behavior trace on the promoted production artifact. The normal shipped-status receipt remains outstanding.
+
+### November 22 R1 and R4 verification
+
+The governing evaluator passed R1 and R4 after the checks on `7772893e72f15732f586dea1b7d1f711797cd653`. The release preview then identified three P-006 requirements that still need verified operational evidence. They cover avoidable delivery failures, usefulness, and observed requester decisions. Independent verification for R6 and R7 and the acceptance grade remain open.
+
+| Check | Recorded result |
+| --- | --- |
+| R4 plan start | Run 24241428 passed 25 cases with zero skips on private PostgreSQL. It retained all 24 earlier cases and added structural-parent promotion after the dependency marker settles. Binding 84159 read back as current. |
+| R1 terminal-host unit suite | Run 24241430 passed all 688 cases on the clean checkout. Bindings 84160 and 84161 read back as current. |
+| R1 delivery receipt | Controls 24241474 and 24241477 passed all 40 selected cases. The copy-out mutation suppressed the successful persistence flag. Run 24241486 failed the same 18 cases as the earlier registered mutation and passed the other 22. The selector excluded 99 cases in each leg. Bindings 84162 and 84164 read back as current. |
+
+The additional full terminal-host integration run, 24241507, passed 135 of 139 cases with zero skips. Two startup cases missed the expected diagnostic snapshot and two restart cases missed the predecessor-stop event by the assertion deadline. The test router identified the retained `7772893e72` checkout. The ledger recorded a dirty tree and no commit SHA. Each of the four named cases passed in both focused follow-ups, 24241527 and 24241539, with and without the inherited committed-source loader. The cause of the full-suite failures is still open on WI-6554700010067681.
+
+All 18 native trial source files and the checker regression matched their recorded blobs at `fcd2272793ba3f66d6183b614786457085c3fb96`. A subsequent read-only provider check found zero eligible Claude targets across seven accounts. Two reported a full weekly window and five supplied no usable capacity reading. The November 22 trial file has working SHA-256 `815bea41482dda96de9cdc7709ee54bad63eadd585b992d25ec8167473d65955`. Registration requires matching committed bytes.
+
 ## November 21 staging candidate
 
 **Staging is available for user testing. The plan is awaiting acceptance.** The native run and retrieval check below used `e772e45a78b193b9bb613c8ae3414c2f2c8835cc` on port 3170. The observed bundle was `1892752a51dc7952d5f44f95b47e319e1e489881d554cd8291cfc0398212e149`. Revision 93 of `get-feedback-reliability-usefulness-adoption-2026-10-03` has content hash `414e59e46e5db0cfae9053b5daf0dedd9d2d5290a83235f12a5a95548cbc5b5b`. The implementation work continues under WI-6554700010046171 and directive 3394. [Staging test instructions and completed example](/reports?sel=rpt_78202d1a-e1ab-4548-af4e-d31c8631ce6d)
