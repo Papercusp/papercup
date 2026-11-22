@@ -16,6 +16,7 @@
  * backups) follow this exact shape per the P-008 / D-016 classification.
  */
 import { DBOS } from '@dbos-inc/dbos-sdk';
+import type { CensusDeviceStepReceipt, DiskConsumerCensusWorkflowReceipt } from '../storage/disk-consumer-census';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import type { PgssBaseline } from '../system-health/hot-seq-scan-detector';
@@ -1339,7 +1340,7 @@ DBOS.registerScheduled(storageGrowthAlarmWorkflow, { name: 'storageGrowthAlarm',
 // own transient scope with its output in files, and a recovered step adopts the walk
 // still running instead of starting over (storage/disk-census-detached-walk.ts). Every
 // step is idempotent, so the recovery budget is sized for many restarts per run.
-async function diskConsumerCensusTick(): Promise<void> {
+async function diskConsumerCensusTick(): Promise<DiskConsumerCensusWorkflowReceipt> {
   const runKey = DBOS.workflowID ?? 'disk-consumer-census-adhoc';
   const pass = await DBOS.runStep(
     async () => {
@@ -1358,24 +1359,40 @@ async function diskConsumerCensusTick(): Promise<void> {
     },
     { name: 'disk-consumer-census-prepare' },
   );
-  if (!pass) return;
+  if (!pass) return { runKey, status: 'skipped', devices: [] };
+  const {
+    buildDiskConsumerCensusWorkflowReceipt,
+    censusDeviceStepReceipt,
+    censusOneDevice,
+  } = await import('../storage/disk-consumer-census');
+  const deviceReceipts: CensusDeviceStepReceipt[] = [];
   for (const device of pass.devices) {
-    await DBOS.runStep(
+    const storedReceipt = await DBOS.runStep(
       async () => {
-        const { censusOneDevice } = await import('../storage/disk-consumer-census');
         const { detachedCensusWalker } = await import('../storage/disk-census-detached-walk');
         const outcome = await censusOneDevice(pass, device, { runDu: detachedCensusWalker(runKey) });
         if (!outcome.run) {
-          console.warn(`[disk-consumer-census] ${outcome.failure.device} failed: ${outcome.failure.error}`);
-          return;
+          const receipt = censusDeviceStepReceipt(device.device, outcome);
+          console.warn('[disk-consumer-census] ' + receipt.device + ' failed: ' +
+            (receipt.outcome === 'failed' ? receipt.error : receipt.reason));
+          return receipt;
         }
         const run = outcome.run;
         console.log(
-          `[disk-consumer-census] ${run.device}: ${run.consumers} consumer(s), unattributed ${(run.unattributedBytes / 1024 ** 3).toFixed(1)}GiB, ${run.complete ? 'complete' : 'INCOMPLETE'} in ${Math.round(run.durationMs / 1000)}s`,
+          '[disk-consumer-census] ' + run.device + ': ' + run.consumers +
+          ' consumer(s), unattributed ' + (run.unattributedBytes / 1024 ** 3).toFixed(1) +
+          'GiB, ' + (run.complete ? 'complete' : 'INCOMPLETE') + ' in ' +
+          Math.round(run.durationMs / 1000) + 's',
         );
+        return censusDeviceStepReceipt(device.device, outcome);
       },
       { name: 'disk-consumer-census-device' },
     );
+    const receipt = censusDeviceStepReceipt(device.device, storedReceipt);
+    if (receipt.outcome === 'unknown') {
+      console.warn('[disk-consumer-census] ' + receipt.device + ' has no saved outcome receipt: ' + receipt.reason);
+    }
+    deviceReceipts.push(receipt);
   }
   await DBOS.runStep(
     async () => {
@@ -1386,6 +1403,7 @@ async function diskConsumerCensusTick(): Promise<void> {
     },
     { name: 'disk-consumer-census-prune' },
   );
+  return buildDiskConsumerCensusWorkflowReceipt(runKey, deviceReceipts);
 }
 const diskConsumerCensusWorkflow = idempotentRegisterWorkflow('diskConsumerCensus', () =>
   DBOS.registerWorkflow(diskConsumerCensusTick, {

@@ -21,7 +21,9 @@ import * as buildInfo from '../build-info';
 import * as bootIdentity from '../dbos/process-boot-identity';
 import {
   apiStoreConsumers,
+  buildDiskConsumerCensusWorkflowReceipt,
   censusOneDevice,
+  censusDeviceStepReceipt,
   diskCensusPassInFlight,
   pruneDiskCensus,
   readCompleteDiskConsumerCensus,
@@ -63,6 +65,50 @@ let endpointEvidence: string;
 let censusDatabaseUri: string;
 
 beforeEach(() => { invalidation.notify.mockClear(); });
+
+describe('durable census workflow receipts', () => {
+  const recorded = (device: string, complete: boolean) => censusDeviceStepReceipt(device, {
+    run: {
+      runId: 'run-' + device,
+      device,
+      complete,
+      consumers: 2,
+      usedBytes: 100,
+      attributedBytes: 80,
+      unattributedBytes: 20,
+      durationMs: 500,
+    },
+  });
+
+  it('preserves the exact per-device failure and keeps the workflow incomplete', () => {
+    const error = 'permission denied while inspecting /mnt/data';
+    const receipt = censusDeviceStepReceipt('/mnt/data', {
+      failure: { device: '/mnt/data', error },
+    });
+
+    expect(receipt).toEqual({ device: '/mnt/data', outcome: 'failed', error });
+    expect(buildDiskConsumerCensusWorkflowReceipt('workflow-1', [receipt]).status).toBe('incomplete');
+  });
+
+  it('reports a missing legacy DBOS step output as unknown, never as success', () => {
+    const receipt = censusDeviceStepReceipt('/mnt/data', undefined);
+
+    expect(receipt).toMatchObject({ device: '/mnt/data', outcome: 'unknown' });
+    expect(buildDiskConsumerCensusWorkflowReceipt('workflow-1', [receipt]).status).toBe('incomplete');
+  });
+
+  it('marks the workflow complete only when every prepared device has a complete run', () => {
+    const root = recorded('/', true);
+    const data = recorded('/mnt/data', false);
+
+    expect(buildDiskConsumerCensusWorkflowReceipt('workflow-1', [root]).status).toBe('complete');
+    expect(buildDiskConsumerCensusWorkflowReceipt('workflow-1', [root, data])).toMatchObject({
+      status: 'incomplete',
+      devices: [root, data],
+    });
+    expect(buildDiskConsumerCensusWorkflowReceipt('workflow-1', []).status).toBe('incomplete');
+  });
+});
 
 describe('independent consecutive-incomplete episodes (real PG)', () => {
   afterEach(async () => {

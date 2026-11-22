@@ -1404,6 +1404,49 @@ export type CensusDeviceOutcome =
   | { run: CensusRunResult; failure?: undefined }
   | { run?: undefined; failure: { device: string; error: string } };
 
+export type CensusDeviceStepReceipt =
+  | { device: string; outcome: 'recorded'; runId: string; complete: boolean; consumers: number }
+  | { device: string; outcome: 'failed'; error: string }
+  | { device: string; outcome: 'unknown'; reason: string };
+
+export interface DiskConsumerCensusWorkflowReceipt {
+  runKey: string;
+  status: 'complete' | 'incomplete' | 'skipped';
+  devices: CensusDeviceStepReceipt[];
+}
+
+/** Convert current outcomes and persisted DBOS step values into an honest receipt. */
+export function censusDeviceStepReceipt(
+  device: string,
+  value: CensusDeviceOutcome | CensusDeviceStepReceipt | null | undefined,
+): CensusDeviceStepReceipt {
+  if (value === null || value === undefined) {
+    return { device, outcome: 'unknown', reason: 'DBOS step output is missing; device outcome is unknown' };
+  }
+  if ('outcome' in value) {
+    return value.device === device
+      ? value
+      : { device, outcome: 'unknown', reason: 'DBOS step receipt device does not match the prepared device' };
+  }
+  if (value.run) {
+    return value.run.device === device
+      ? { device, outcome: 'recorded', runId: value.run.runId, complete: value.run.complete, consumers: value.run.consumers }
+      : { device, outcome: 'unknown', reason: 'census run device does not match the prepared device' };
+  }
+  return value.failure.device === device
+    ? { device, outcome: 'failed', error: value.failure.error }
+    : { device, outcome: 'unknown', reason: 'census failure device does not match the prepared device' };
+}
+
+/** A successful DBOS workflow is a complete census only when every prepared device is complete. */
+export function buildDiskConsumerCensusWorkflowReceipt(
+  runKey: string,
+  devices: CensusDeviceStepReceipt[],
+): DiskConsumerCensusWorkflowReceipt {
+  const complete = devices.length > 0 && devices.every((device) => device.outcome === 'recorded' && device.complete);
+  return { runKey, status: complete ? 'complete' : 'incomplete', devices };
+}
+
 /** Resolve one pass: the devices, the API-sized stores, and the walk's privilege (probed once). */
 export async function prepareCensusPass(deps: CensusDeps = {}): Promise<{ skipped: string } | CensusPass> {
   if (process.platform !== 'linux' && !deps.runDu) return { skipped: `unsupported platform ${process.platform}` };
