@@ -19,7 +19,7 @@ import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { runGovernedTestProcess } from './lib/governed-test-process.mjs';
-import { inventoryTree, CLASSES, acceptanceProblems, lintProblems, baselineCeiling } from './lib/condition-rail-inventory.mjs';
+import { inventoryTree, inventoryCoverageProblems, CLASSES, acceptanceProblems, lintProblems, baselineCeiling } from './lib/condition-rail-inventory.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 const BASELINE = 'scripts/condition-rail-baseline.json';
@@ -51,6 +51,10 @@ export function runInventory() {
 async function main() {
   const res = runInventory();
   const args = process.argv.slice(2);
+  const coverageProblems = inventoryCoverageProblems(res);
+  if (res.submodules.outsideScanScope.length) {
+    console.error(`Unscanned submodules outside the condition-rail source scope: ${JSON.stringify(res.submodules.outsideScanScope)}`);
+  }
   if (args.includes('--lint')) {
     const manifest = JSON.parse(readFileSync(new URL('../docs/evidence/condition-rail-inventory-seed-2026-10-11.json', import.meta.url), 'utf8'));
     const baseline = JSON.parse(readFileSync(new URL(`../${BASELINE}`, import.meta.url), 'utf8'));
@@ -81,6 +85,7 @@ async function main() {
     }
     if (res.staleDispositions.length) console.log(`\nstale disposition keys (no live site): ${res.staleDispositions.join(', ')}`);
     console.log(`\nundispositioned sites: ${res.undispositioned}; unreadable files: ${res.unreadable}`);
+    for (const problem of coverageProblems) console.error(problem);
   }
   if (args.includes('--acceptance')) {
     const manifest = JSON.parse(readFileSync(new URL('../docs/evidence/condition-rail-inventory-seed-2026-10-11.json', import.meta.url), 'utf8'));
@@ -91,10 +96,10 @@ async function main() {
     const problems = acceptanceProblems(manifest, res, RAIL_MIGRATION_CASES,
       listDegradationMechanisms().map((mechanism) => mechanism.mechanism));
     console.log(`condition-rail structural acceptance: ${problems.length} problem(s); executable cases run in condition-rail-coverage.test.ts`);
-    for (const problem of problems.slice(0, 20)) console.error(problem);
+    for (const problem of problems) console.error(problem);
     if (problems.length) process.exitCode = 1;
   }
-  if (args.includes('--check') && (res.unreadable > 0 || res.undispositioned > 0 || res.staleDispositions.length > 0)) process.exitCode = 1;
+  if (args.includes('--check') && (coverageProblems.length || res.undispositioned > 0 || res.staleDispositions.length > 0)) process.exitCode = 1;
 }
 
 if (isCliEntry(import.meta.url)) await main();

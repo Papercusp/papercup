@@ -1,4 +1,8 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { baselineCeiling, inventory, lintProblems } from '../../../../scripts/lib/condition-rail-inventory.mjs';
 
@@ -11,6 +15,45 @@ const empty = { rowIds: [], amendments: [] };
 const bypass = 'function check() { notifyAttention(input); }';
 
 describe('condition-rail lint shrink-only guard (P-006 / R-6)', () => {
+  it('returns incomplete, clean and bypass outcomes through the CLI as a source subtree is restored', () => {
+    const root = mkdtempSync(join(tmpdir(), 'condition-rail-cli-'));
+    const repo = fileURLToPath(new URL('../../../../', import.meta.url));
+    const dir = 'packages/fixture';
+    try {
+      execFileSync('git', ['init', '-q', root]);
+      mkdirSync(join(root, 'scripts/lib'), { recursive: true });
+      symlinkSync(join(repo, 'node_modules'), join(root, 'node_modules'), 'junction');
+      for (const path of ['scripts/condition-rail-inventory.mjs', 'scripts/lib/condition-rail-inventory.mjs']) {
+        copyFileSync(join(repo, path), join(root, path));
+      }
+      for (const name of ['tracked-files', 'strip-comments-and-strings', 'governed-test-process']) {
+        const path = `scripts/lib/${name}.mjs`;
+        writeFileSync(join(root, path), `export * from ${JSON.stringify(pathToFileURL(join(repo, path)).href)};\n`);
+      }
+      writeFileSync(join(root, 'scripts/lib/condition-rail-dispositions.mjs'), 'export const DISPOSITIONS = {};\n');
+      writeFileSync(join(root, '.gitignore'), `/scripts/\n/node_modules\n/${dir}/\n`);
+      writeFileSync(join(root, '.gitmodules'), `[submodule "fixture"]\n\tpath = ${dir}\n\turl = ./unused\n`);
+      const check = (expectedStatus: number) => {
+        const child = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/condition-rail-inventory.mjs', '--json', '--check'],
+          { cwd: root, encoding: 'utf8', timeout: 15_000 });
+        expect(child.error).toBeUndefined();
+        expect(child.status, child.stderr).toBe(expectedStatus);
+        return JSON.parse(child.stdout);
+      };
+      const incomplete = check(1);
+      expect(incomplete.rows).toEqual([]);
+      expect(incomplete.submodules.unscannedAbsent).toEqual([dir]);
+
+      mkdirSync(join(root, dir), { recursive: true });
+      execFileSync('git', ['init', '-q', join(root, dir)]);
+      const source = join(root, dir, 'check.ts');
+      writeFileSync(source, 'export const ok = true;\n');
+      expect(check(0).submodules.scanned).toEqual([dir]);
+      writeFileSync(source, bypass);
+      expect(check(1).rows).toMatchObject([{ file: `${dir}/check.ts`, symbol: 'notifyAttention' }]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 60_000);
+
   it('rejects a new bypass even if it is given a migrate disposition', () => {
     const live = measure(bypass, { [`owner-only-alarm|${file}`]: { disposition: 'migrate', item: 'P-007' } });
     expect(lintProblems(live, empty, empty, manifest).join()).toMatch(/new rail bypass/);

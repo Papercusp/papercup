@@ -87,14 +87,15 @@ export const SCAN_ROOTS = Object.freeze(['packages/', 'apps/', 'orchestrator/', 
 
 const CODE_EXT_RE = /\.(?:[cm]?ts|tsx|[cm]?js)$/;
 
+function inScanTree(path) {
+  return SCAN_ROOTS.some(root => path.startsWith(root)) &&
+    !/(^|\/)(node_modules|_retired|__fixtures__|fixtures|coverage|dist[^/]*|\.vitest-tmp|test|tests|__tests__|sidecar|target|build|out|public|vendor|storybook-static)\//.test(path);
+}
+
 /** Is this tracked path a source file the inventory should read? Pure. */
 export function isScannable(file) {
-  if (!SCAN_ROOTS.some((r) => file.startsWith(r))) return false;
-  if (!CODE_EXT_RE.test(file) || file.endsWith('.d.ts') || file.endsWith('.d.mts')) return false;
-  if (/(^|\/)(node_modules|_retired|__fixtures__|fixtures|coverage)\//.test(file)) return false;
-  if (/(^|\/)dist[^/]*\//.test(file) || /(^|\/)\.vitest-tmp\//.test(file)) return false;
-  if (/(^|\/)(test|tests|__tests__)\//.test(file) || /\.(test|spec|bench)\.[cm]?[jt]sx?$/.test(file)) return false;
-  if (/(^|\/)(sidecar|target|build|out|public|vendor|storybook-static)\//.test(file)) return false; // bundles / vendored assets
+  if (!inScanTree(file) || !CODE_EXT_RE.test(file) || file.endsWith('.d.ts') || file.endsWith('.d.mts')) return false;
+  if (/\.(test|spec|bench)\.[cm]?[jt]sx?$/.test(file)) return false;
   // This scanner and its dispositions name every token on purpose.
   if (/scripts\/lib\/condition-rail-(inventory|dispositions)\.mjs$/.test(file)) return false;
   return true;
@@ -475,24 +476,53 @@ export function dispositionProblem(d) {
   return `unknown disposition ${JSON.stringify(d.disposition)}`;
 }
 
+// Keys start with class|file. Match whole paths or directory boundaries so a
+// literal pipe in an unreadable filename survives the lookup.
+function hasUnobservedSource(key, { unreadableFiles = [], submodules }) {
+  if (typeof key !== 'string') return false;
+  const pathAndSite = key.slice(key.indexOf('|') + 1);
+  return unreadableFiles.some(file => pathAndSite === file || pathAndSite.startsWith(`${file}|`)) ||
+    Boolean(submodules?.unscanned.some(dir => inScanTree(`${dir}/`) && pathAndSite.startsWith(`${dir}/`)));
+}
+
+/** Produce the coverage diagnostics shared by the lint, acceptance check and seed writer. */
+export function inventoryCoverageProblems(live) {
+  const problems = [];
+  if (live.unreadable > 0) {
+    const paths = (live.unreadableFiles ?? []).map(file => JSON.stringify(file));
+    problems.push(`${live.unreadable} unreadable source file(s)${paths.length ? `: ${paths.join(', ')}` : ''}`);
+  }
+  const submodules = live.submodules;
+  if (submodules) {
+    const absent = new Set(submodules.unscannedAbsent);
+    for (const dir of submodules.unscanned) {
+      if (!inScanTree(`${dir}/`)) continue;
+      problems.push(`Unscanned source submodule ${JSON.stringify(dir)} (${absent.has(dir) ? 'not checked out' : 'present on disk but not enumerated'})`);
+    }
+  }
+  return problems;
+}
+
 /**
  * Inventory a set of repo-relative files under `root`. `readFile` is injectable for tests.
  * Returns every bypass row with its resolved disposition, every site (on the rail or not), and
  * coverage counters.
+ * @param {{root: string, files: Iterable<string>, dispositions?: Record<string, any>, readFile?: (file: string) => string,
+ *   submodules?: Omit<ReturnType<typeof listFilesIncludingUntracked>, 'files'> & {outsideScanScope: string[]}}} input
  */
-export function inventory({ root, files, dispositions = {}, readFile }) {
+export function inventory({ root, files, dispositions = {}, readFile, submodules }) {
   const read = readFile ?? ((f) => readFileSync(join(root, f), 'utf8'));
   const rows = [];
   const sites = [];
   let scanned = 0;
-  let unreadable = 0;
+  const unreadableFiles = [];
   for (const f of files) {
     if (!isScannable(f)) continue;
     let text;
     try {
       text = read(f);
     } catch {
-      unreadable++;
+      unreadableFiles.push(f);
       continue;
     }
     scanned++;
@@ -511,15 +541,17 @@ export function inventory({ root, files, dispositions = {}, readFile }) {
   // A disposition key that no longer matches any bypass row is dead weight (fixed or renamed):
   // report it, and --check fails on it (D-006) so a migrated cluster cannot keep its entry.
   const liveKeys = new Set(rows.flatMap((r) => [r.id, r.key, `${r.key}|${r.symbol}`]));
-  const staleDispositions = Object.keys(dispositions).filter((k) => !liveKeys.has(k));
-  return { rows, sites, scanned, unreadable, byClass, undispositioned, staleDispositions };
+  const coverage = { unreadableFiles, submodules };
+  const staleDispositions = Object.keys(dispositions).filter(key => !liveKeys.has(key) && !hasUnobservedSource(key, coverage));
+  return { rows, sites, scanned, unreadable: unreadableFiles.length, ...coverage, byClass, undispositioned, staleDispositions };
 }
 
 /** The canonical tree inventory used by the CLI and manifest checks. @param {string} root */
 export function inventoryTree(root) {
-  const listed = listFilesIncludingUntracked(root);
-  const files = Array.isArray(listed) ? listed : listed.files;
-  return inventory({ root, files, dispositions: DISPOSITIONS });
+  const { files, ...submodules } = listFilesIncludingUntracked(root);
+  return inventory({ root, files, dispositions: DISPOSITIONS, submodules: {
+    ...submodules, outsideScanScope: submodules.unscanned.filter(dir => !inScanTree(`${dir}/`)),
+  } });
 }
 
 /**
@@ -532,7 +564,7 @@ export function inventoryTree(root) {
  */
 export function manifestProblems(manifest, live, options = {}) {
   const { completedItems = [], requireAllMigrated = false } = options;
-  const problems = [];
+  const problems = inventoryCoverageProblems(live);
   const ids = new Set();
   const sites = new Map(live.sites.map((site) => [site.id, site]));
   const bypasses = new Map(live.rows.map((row) => [row.id, row]));
@@ -556,7 +588,7 @@ export function manifestProblems(manifest, live, options = {}) {
         problems.push(`invalid relocation: ${amendment.rowId}`);
       } else if (manifest.rows.some((row) => row.id === target)) {
         problems.push(`relocation onto an existing seed ID: ${amendment.rowId} -> ${target}`);
-      } else if (!sites.has(target)) {
+      } else if (!sites.has(target) && !hasUnobservedSource(target, live)) {
         problems.push(`relocation target absent from the tree: ${amendment.rowId} -> ${target}`);
       }
     }
@@ -571,7 +603,10 @@ export function manifestProblems(manifest, live, options = {}) {
     if (problem) problems.push(`${row.id}: ${problem}`);
     if (!['condition', 'observation'].includes(effective.route)) problems.push(`${row.id}: missing route`);
     const site = sites.get(row.id);
-    if (!site) { problems.push(`${row.id}: seed site absent without removal amendment`); continue; }
+    if (!site) {
+      if (!hasUnobservedSource(row.id, live)) problems.push(`${row.id}: seed site absent without removal amendment`);
+      continue;
+    }
     if (effective.disposition === 'migrate') {
       const mustBeMigrated = requireAllMigrated || completedItems.includes(effective.item);
       if (mustBeMigrated && !site.onRail) problems.push(`${row.id}: completed migration still bypasses rail`);
@@ -646,7 +681,6 @@ export function acceptanceProblems(manifest, live, cases, registeredMechanisms) 
   const effectiveRows = manifest.rows.map((row) => ({ ...row, ...amended.get(row.id) }));
   const items = [...new Set(effectiveRows.filter((row) => row.disposition === 'migrate').map((row) => row.item))];
   return [
-    ...(live.unreadable > 0 ? [`${live.unreadable} unreadable source file(s)`] : []),
     ...(live.undispositioned > 0 ? [`${live.undispositioned} undispositioned site(s)`] : []),
     ...live.staleDispositions.map((key) => `stale disposition: ${key}`),
     ...manifestProblems(manifest, live, { requireAllMigrated: true }),
@@ -663,7 +697,7 @@ export function acceptanceProblems(manifest, live, cases, registeredMechanisms) 
  * @param {any} manifest
  */
 export function lintProblems(live, baseline, committedBaseline, manifest) {
-  const problems = [];
+  const problems = inventoryCoverageProblems(live);
   const known = new Set(baseline.rowIds);
   const prior = new Set(committedBaseline.rowIds);
   if (known.size !== baseline.rowIds.length) problems.push('duplicate baseline row ID');
@@ -689,8 +723,9 @@ export function lintProblems(live, baseline, committedBaseline, manifest) {
     } else if (!known.has(row.id)) problems.push(`${row.id}: new rail bypass`);
   }
   const liveBypasses = new Set(live.rows.map((row) => row.id));
-  for (const id of known) if (!liveBypasses.has(id)) problems.push(`${id}: obsolete baseline entry; remove it`);
-  if (live.unreadable > 0) problems.push(`${live.unreadable} unreadable source file(s)`);
+  for (const id of known) {
+    if (!liveBypasses.has(id) && !hasUnobservedSource(id, live)) problems.push(`${id}: obsolete baseline entry; remove it`);
+  }
   if (live.undispositioned > 0) problems.push(`${live.undispositioned} undispositioned site(s)`);
   for (const key of live.staleDispositions) problems.push(`stale disposition: ${key}`);
   return problems;

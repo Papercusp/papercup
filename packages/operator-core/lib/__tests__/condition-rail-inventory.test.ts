@@ -7,14 +7,21 @@
  * must not report). The negative controls are what keep a positive control honest: a scanner
  * that reported every file would pass the positives alone.
  */
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   CLASSES,
+  acceptanceProblems,
   dispositionFor,
   dispositionProblem,
   hasCandidateAnchor,
   inventory,
+  inventoryTree,
   isScannable,
+  lintProblems,
   scanSites,
   scanSource,
 } from '../../../../scripts/lib/condition-rail-inventory.mjs';
@@ -236,6 +243,68 @@ describe('condition-rail inventory — class 5: signal-actor-registry waivers', 
 });
 
 describe('condition-rail inventory — scope, dispositions and coverage', () => {
+  it('reports every missing source subtree and finds the bypass once Git can enumerate it', () => {
+    const root = mkdtempSync(join(tmpdir(), 'condition-rail-submodules-'));
+    const missing = ['libs/a', 'libs/b', 'libs/c', 'libs/d'];
+    const archived = 'libs/rail space';
+    const fixture = 'apps/demo/fixtures/vendor';
+    const outside = 'docs/example';
+    const declared = [...missing, archived, fixture, outside].sort();
+    const file = `${archived}/alarm.ts`;
+    const key = `owner-only-alarm|${file}|check|1`;
+    const baseline = { rowIds: [key] };
+    const manifest = { rows: [], amendments: [] };
+    try {
+      execFileSync('git', ['init', '-q', root]);
+      writeFileSync(join(root, '.gitmodules'), [...declared].reverse().map((dir, n) =>
+        `[submodule "fixture-${n}"]\n\tpath = ${dir}\n\turl = ./unused\n`).join(''));
+      writeFileSync(join(root, '.gitignore'), declared.map(dir => `/${dir}/`).join('\n'));
+      mkdirSync(join(root, archived), { recursive: true });
+      writeFileSync(join(root, file), 'export function check() { notifyAttention(input); }\n');
+
+      const before = inventoryTree(root);
+      expect(before.rows).toEqual([]);
+      expect(before).toHaveProperty('submodules', {
+        declared, scanned: [], unscanned: declared, unscannedPresent: [archived],
+        unscannedAbsent: declared.filter(dir => dir !== archived), outsideScanScope: [fixture, outside],
+      });
+      const lint = lintProblems(before, baseline, baseline, manifest);
+      const acceptance = acceptanceProblems(manifest, before, [], []);
+      for (const dir of [...missing, archived]) {
+        const issue = `Unscanned source submodule ${JSON.stringify(dir)}`;
+        expect(lint.some(message => message.startsWith(issue)), dir).toBe(true);
+        expect(acceptance.some(message => message.startsWith(issue)), dir).toBe(true);
+      }
+      expect(lint.some(message => message.includes(key) && message.includes('obsolete'))).toBe(false);
+      expect(lint.some(message => message.includes(fixture) || message.includes(outside))).toBe(false);
+
+      for (const dir of [...missing, archived]) {
+        mkdirSync(join(root, dir), { recursive: true });
+        execFileSync('git', ['init', '-q', join(root, dir)]);
+        writeFileSync(join(root, dir, 'README.md'), 'Enumerated by Git.\n');
+      }
+      const after = inventoryTree(root);
+      expect(after).toHaveProperty('submodules.unscanned', [fixture, outside]);
+      expect(after.rows.map(row => row.id)).toEqual([key]);
+      const recovered = lintProblems(after, { rowIds: [] }, { rowIds: [] }, manifest);
+      expect(recovered).toContain(`${key}: new rail bypass`);
+      expect(recovered.some(message => message.startsWith('Unscanned source submodule'))).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps an unreadable file identifiable without declaring its existing disposition obsolete', () => {
+    const file = 'packages/example/a|b.ts';
+    const key = `owner-only-alarm|${file}|check|1`;
+    const live = inventory({ root: '/unused', files: [file], dispositions: { [key]: { disposition: 'migrate', item: 'P-001' } },
+      readFile: () => { throw new Error('unreadable'); } });
+    expect(live.unreadable).toBe(1);
+    expect(live).toHaveProperty('unreadableFiles', [file]);
+    expect(live.staleDispositions).toEqual([]);
+    const lint = lintProblems(live, { rowIds: [key] }, { rowIds: [key] }, { rows: [] });
+    expect(lint.some(message => message.includes(file) && message.includes('unreadable'))).toBe(true);
+    expect(lint.some(message => message.includes('obsolete'))).toBe(false);
+  });
+
   it('scans source and skips tests, bundles, vendored assets and itself', () => {
     expect(isScannable('packages/operator-core/lib/alarm-attention.ts')).toBe(true);
     expect(isScannable('scripts/npm-install-safe.mjs')).toBe(true);

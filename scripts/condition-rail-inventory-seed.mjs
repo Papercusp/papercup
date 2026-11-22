@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { runInventory } from './condition-rail-inventory.mjs';
+import { inventoryCoverageProblems } from './lib/condition-rail-inventory.mjs';
 
 const input = process.argv[2];
 if (!input) throw new Error('Usage: node --import tsx scripts/condition-rail-inventory-seed.mjs <original-audit.json>');
@@ -17,6 +18,8 @@ if (seed.length !== 307 || seed.filter((row) => row.disposition.disposition === 
   throw new Error('Input is not the original 307-row / 243-migration audit.');
 }
 const live = runInventory();
+const coverageProblems = inventoryCoverageProblems(live);
+if (coverageProblems.length) throw new Error(`Incomplete condition-rail seed input\n${coverageProblems.join('\n')}`);
 const used = new Set();
 const rows = seed.map((row) => {
   const candidates = live.sites.filter((site) => site.class === row.class && site.file === row.file && site.symbol === row.symbol);
