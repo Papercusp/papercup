@@ -2345,6 +2345,8 @@ export interface RunGitSyncOpts {
   beforePush?: (args: readonly string[], cwd: string) => Promise<void>;
   /** Called whenever the default git runner observes command progress. */
   onProgress?: () => void;
+  /** Observable filesystem work in the pre-fetch object integrity check. */
+  onLooseObjectScanProgress?: (scan: GitSyncLooseObjectScanProgress) => void;
   /** Best-effort notification at each successful ROOT publication, before later
    * groups/push. Replayed commit checkpoints deliver the saved producer proof. */
   onRootCommit?: (commit: GitSyncRootCommit) => void;
@@ -3862,7 +3864,23 @@ async function gitDirForRepo(runGit: RunGit, repoPath: string): Promise<string> 
   return gd.code === 0 ? gd.stdout.trim() : '';
 }
 
-const ZERO_BYTE_LOOSE_OBJECT_REPORT_LIMIT = 20;
+// Each repo issues at most 4 × 4 filesystem reads at once. Bound the work in
+// flight even when all eight repositories in a submodule batch scan together.
+const LOOSE_OBJECT_FANOUT_BATCH = 4;
+const LOOSE_OBJECT_STAT_BATCH = 4;
+const OWN_HEAD_LOOSE_OBJECT_REPAIR_LIMIT = 20;
+
+export interface GitSyncLooseObjectScanProgress {
+  repoPath: string;
+  state: 'started' | 'advanced' | 'finished';
+  directoriesRead: number;
+  objectsChecked: number;
+}
+
+type LooseObjectScanOptions = {
+  signal?: AbortSignal;
+  onProgress?: (scan: GitSyncLooseObjectScanProgress) => void;
+};
 
 /**
  * A canonical loose object lives at `objects/<2 hex>/<38 hex>`. Git writes it
@@ -3877,36 +3895,72 @@ const ZERO_BYTE_LOOSE_OBJECT_REPORT_LIMIT = 20;
  * only remaining identity needed for reflog/working-tree recovery.
  */
 export async function findZeroByteLooseObjects(runGit: RunGit, repoPath: string): Promise<string[]> {
-  const gitDir = await gitDirForRepo(runGit, repoPath);
-  if (!gitDir) return [];
-  let fanouts: string[];
-  try {
-    fanouts = await readdir(join(gitDir, 'objects'));
-  } catch {
-    return [];
-  }
+  // The own-head consumer can attempt on-disk recovery with these IDs. Keep its
+  // existing per-attempt limit. The scheduled publisher uses the full census.
+  return scanZeroByteLooseObjects(runGit, repoPath, {}, OWN_HEAD_LOOSE_OBJECT_REPAIR_LIMIT);
+}
 
-  const corrupt: string[] = [];
-  for (const fanout of fanouts.sort()) {
-    if (!/^[0-9a-f]{2}$/i.test(fanout)) continue;
-    let names: string[];
-    try {
-      names = await readdir(join(gitDir, 'objects', fanout));
-    } catch {
-      continue;
-    }
-    for (const name of names.sort()) {
-      if (!/^[0-9a-f]{38}$/i.test(name)) continue;
-      try {
-        const st = await lstat(join(gitDir, 'objects', fanout, name));
-        if (st.isFile() && st.size === 0) corrupt.push(`${fanout}${name}`.toLowerCase());
-      } catch {
-        // A concurrent maintenance process may remove or repack the object.
+export async function scanZeroByteLooseObjects(
+  runGit: RunGit,
+  repoPath: string,
+  { signal, onProgress }: LooseObjectScanOptions,
+  repairLimit = Infinity,
+): Promise<string[]> {
+  signal?.throwIfAborted();
+  const gitDir = await gitDirForRepo(runGit, repoPath);
+  signal?.throwIfAborted();
+  if (!gitDir) return [];
+
+  let directoriesRead = 0;
+  let objectsChecked = 0;
+  const report = (state: GitSyncLooseObjectScanProgress['state']): void => {
+    onProgress?.({ repoPath, state, directoriesRead, objectsChecked });
+  };
+  const readNames = async (path: string): Promise<string[]> => {
+    const names = await readdir(path).catch(() => undefined);
+    if (signal?.aborted || names === undefined) return [];
+    directoriesRead += 1;
+    report('advanced');
+    return names;
+  };
+  const objectsDir = join(gitDir, 'objects');
+  const scanFanout = async (fanout: string): Promise<string[]> => {
+    const directory = join(objectsDir, fanout);
+    const names = (await readNames(directory)).filter(name => /^[0-9a-f]{38}$/i.test(name)).sort();
+    const corrupt: string[] = [];
+    for (let i = 0; i < names.length && !signal?.aborted; i += LOOSE_OBJECT_STAT_BATCH) {
+      const matches = await Promise.all(names.slice(i, i + LOOSE_OBJECT_STAT_BATCH).map(async name => {
+        // Concurrent maintenance can remove or repack a loose object.
+        const st = await lstat(join(directory, name)).catch(() => undefined);
+        if (signal?.aborted) return undefined;
+        objectsChecked += 1;
+        report('advanced');
+        return st?.isFile() && st.size === 0 ? `${fanout}${name}`.toLowerCase() : undefined;
+      }));
+      for (const match of matches) {
+        if (match !== undefined) corrupt.push(match);
       }
-      if (corrupt.length >= ZERO_BYTE_LOOSE_OBJECT_REPORT_LIMIT) return corrupt;
     }
+    return corrupt;
+  };
+
+  report('started');
+  try {
+    const fanouts = (await readNames(objectsDir)).filter(name => /^[0-9a-f]{2}$/i.test(name)).sort();
+    signal?.throwIfAborted();
+    const corrupt: string[] = [];
+    for (let i = 0; i < fanouts.length; i += LOOSE_OBJECT_FANOUT_BATCH) {
+      const matches = await Promise.all(fanouts.slice(i, i + LOOSE_OBJECT_FANOUT_BATCH).map(scanFanout));
+      signal?.throwIfAborted();
+      for (const group of matches) {
+        for (const match of group) corrupt.push(match);
+      }
+      if (corrupt.length >= repairLimit) return corrupt.slice(0, repairLimit);
+    }
+    return corrupt;
+  } finally {
+    report('finished');
   }
-  return corrupt;
 }
 
 async function listTempPackEntries(
@@ -8323,6 +8377,7 @@ type ReconcileRepoOpts = Pick<
   'remote' | 'defaultBranch' | 'log' | 'staleTempPackMs' | 'isTempPackOpen' | 'isGitLockOpen' | 'onGitMetadataLockSweep'
 > & {
   doPush: boolean;
+  looseObjectScan?: LooseObjectScanOptions;
   /** Disable Git's commit-graph ancestry fast path when this repo merges submodule gitlinks. */
   disableCommitGraphForSubmoduleMerge?: boolean;
   /** A child repo's stale remote-tracking ref cannot prove its current pin is publishable. */
@@ -9977,7 +10032,7 @@ async function reconcileAndPushOneRepo(
   await sweepAndReportGitMetadataLocks(
     runGit, repoPath, o.log, o.onGitMetadataLockSweep, o.isGitLockOpen ? { isOpen: o.isGitLockOpen } : {},
   );
-  const zeroByteLooseObjects = await findZeroByteLooseObjects(runGit, repoPath);
+  const zeroByteLooseObjects = await scanZeroByteLooseObjects(runGit, repoPath, o.looseObjectScan ?? {});
   if (zeroByteLooseObjects.length > 0) {
     return {
       status: 'error',
@@ -10223,6 +10278,7 @@ async function syncOneRepo(
     remote: string;
     defaultBranch: string;
     doPush: boolean;
+    looseObjectScan?: LooseObjectScanOptions;
     /** Disable the commit-graph ancestry shortcut when merging submodule gitlinks. */
     disableCommitGraphForSubmoduleMerge?: boolean;
     requireRemoteVerification?: boolean;
@@ -10480,6 +10536,16 @@ async function runGitSyncPass(
     writeText,
     log,
     staleTempPackMs: opts.staleTempPackMs ?? STALE_TEMP_PACK_MS,
+    looseObjectScan: {
+      signal: opts.signal,
+      onProgress: (scan: GitSyncLooseObjectScanProgress) => {
+        try {
+          opts.onLooseObjectScanProgress?.(scan);
+        } catch {
+          // Diagnostic observers must never break the integrity check.
+        }
+      },
+    },
     isTempPackOpen: opts.isTempPackOpen,
     isGitLockOpen: opts.isGitLockOpen,
     onGitMetadataLockSweep: opts.onGitMetadataLockSweep,

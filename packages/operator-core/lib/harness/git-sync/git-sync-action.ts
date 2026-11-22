@@ -287,6 +287,7 @@ import {
   describeStashAge,
   type RunGit,
   type GitSyncConfig,
+  type GitSyncLooseObjectScanProgress,
   type GitSyncOutcome,
   type GitSyncSkippedPath,
   type RepoConflict,
@@ -2817,6 +2818,14 @@ type GitSyncTimeoutSnapshot = {
   kind: 'idle' | 'hard';
   phase: string;
   git_commands: GitSyncCommandSnapshot;
+  loose_object_scans?: GitSyncActiveLooseObjectScan[];
+};
+type GitSyncActiveLooseObjectScan = {
+  repo_path: string;
+  started_at: number;
+  last_progress_at: number | null;
+  directories_read: number;
+  objects_checked: number;
 };
 type GitSyncActivityMarker = {
   active: boolean;
@@ -2831,12 +2840,13 @@ type GitSyncActivityMarker = {
   /** Exact DBOS correlation; manual fires outside a workflow explicitly record null. */
   workflow_id: string | null;
   git_commands: GitSyncCommandSnapshot;
+  loose_object_scans?: GitSyncActiveLooseObjectScan[];
   timeout?: GitSyncTimeoutSnapshot;
   settlement_progress?: GitSyncSettlementProgress;
   /** EI-24496143892913296: the post-legs leg that just started (e.g. 'git-sync:ref-announce'). */
   leg?: string;
 };
-type GitSyncActivityFields = Omit<GitSyncActivityMarker, 'owner' | 'owner_pid' | 'workflow_id' | 'git_commands' | 'timeout'>;
+type GitSyncActivityFields = Omit<GitSyncActivityMarker, 'owner' | 'owner_pid' | 'workflow_id' | 'git_commands' | 'loose_object_scans' | 'timeout'>;
 
 /**
  * Writer-backed liveness for the whole git-sync action, not just its local commit
@@ -4004,6 +4014,10 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   };
   let nextGitCommandId = 0;
   let timeoutSnapshot: GitSyncTimeoutSnapshot | undefined;
+  const looseObjectScans = new Map<string, GitSyncActiveLooseObjectScan>();
+  const snapshotLooseObjectScans = () => looseObjectScans.size > 0
+    ? { loose_object_scans: [...looseObjectScans.values()] }
+    : {};
   const snapshotGitCommands = (): GitSyncCommandSnapshot => {
     const active = [...activeGitCommands.values()].slice(0, 16).map((command) => ({ ...command }));
     const completed = completedGitCommands.map((command) => ({ ...command }));
@@ -4028,6 +4042,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     owner_pid: process.pid,
     workflow_id: ctx.workflowId ?? null,
     git_commands: snapshotGitCommands(),
+    ...(activity.active ? snapshotLooseObjectScans() : {}),
     ...(timeoutSnapshot ? { timeout: timeoutSnapshot } : {}),
   });
   let activityWriteTail: Promise<void> | null = null;
@@ -4271,7 +4286,10 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     errorAwaitingGitExit = activeGitExecutions.size > 0;
     const awaitingGitExit = errorAwaitingGitExit;
     const failedAt = Date.now();
-    timeoutSnapshot ??= { at: failedAt, kind: error.timeoutKind, phase: error.phase, git_commands: snapshotGitCommands() };
+    timeoutSnapshot ??= {
+      at: failedAt, kind: error.timeoutKind, phase: error.phase,
+      git_commands: snapshotGitCommands(), ...snapshotLooseObjectScans(),
+    };
     const marker = withActivityOwner({
       active: awaitingGitExit,
       phase: 'error',
@@ -4332,6 +4350,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     if (error instanceof GitSyncActionTimeoutError) {
       timeoutSnapshot ??= {
         at: Date.now(), kind: error.timeoutKind, phase: error.phase, git_commands: snapshotGitCommands(),
+        ...snapshotLooseObjectScans(),
       };
     }
   }, { once: true });
@@ -4687,6 +4706,23 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       liveness.touch();
       enqueueActivityHeartbeat(liveness, 'local-sync', null);
     };
+    const onLooseObjectScanProgress = (scan: GitSyncLooseObjectScanProgress): void => {
+      if (scan.state === 'finished') {
+        looseObjectScans.delete(scan.repoPath);
+        return;
+      }
+      const now = Date.now();
+      looseObjectScans.set(scan.repoPath, {
+        repo_path: scan.repoPath,
+        started_at: looseObjectScans.get(scan.repoPath)?.started_at ?? now,
+        last_progress_at: scan.state === 'advanced' ? now : null,
+        directories_read: scan.directoriesRead,
+        objects_checked: scan.objectsChecked,
+      });
+      // Starting a read proves nothing about its liveness. Only a completed
+      // filesystem operation advances the same idle clock used by Git.
+      if (scan.state === 'advanced') onGitProgress();
+    };
 
     // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
     outcome = await guarded('run-git-sync', () =>
@@ -4776,10 +4812,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         step: runCheckpointedStep,
         shouldYield,
         resumeSubmoduleProgress,
-        onProgress: () => {
-          liveness.touch();
-          enqueueActivityHeartbeat(liveness, 'local-sync', null);
-        },
+        onProgress: onGitProgress,
+        onLooseObjectScanProgress,
         signal: liveness.signal,
       }),
     );

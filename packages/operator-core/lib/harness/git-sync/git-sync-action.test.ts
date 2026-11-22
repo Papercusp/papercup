@@ -4557,6 +4557,52 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     }
   });
 
+  it('renews idle for completed object checks and captures pending scans with zero active Git commands', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS', '25');
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS', '100');
+    let ready!: (opts: RunGitSyncOpts) => void;
+    const started = new Promise<RunGitSyncOpts>(resolve => { ready = resolve; });
+    runGitSyncMock.mockImplementationOnce(async (_slug, raw) => {
+      const opts = raw as unknown as RunGitSyncOpts;
+      ready(opts);
+      await new Promise<void>(resolve => opts.signal!.addEventListener('abort', () => resolve(), { once: true }));
+      return syncedOutcome;
+    });
+    const running = action(ctx).catch((error: unknown) => error);
+    try {
+      const { onLooseObjectScanProgress: reportScan, signal } = await started;
+      const otherRepo = join(repoDir, 'another-submodule');
+      const doneRepo = join(repoDir, 'completed-submodule');
+      reportScan!({ repoPath: repoDir, state: 'started', directoriesRead: 0, objectsChecked: 0 });
+      reportScan!({ repoPath: doneRepo, state: 'started', directoriesRead: 0, objectsChecked: 0 });
+      await vi.advanceTimersByTimeAsync(20);
+      reportScan!({ repoPath: repoDir, state: 'advanced', directoriesRead: 2, objectsChecked: 4 });
+      await vi.advanceTimersByTimeAsync(20);
+      expect(signal?.aborted).toBe(false);
+      reportScan!({ repoPath: doneRepo, state: 'finished', directoriesRead: 2, objectsChecked: 0 });
+      reportScan!({ repoPath: otherRepo, state: 'started', directoriesRead: 0, objectsChecked: 0 });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(signal?.aborted).toBe(true);
+      expect(await running).toMatchObject({ timeoutKind: 'idle' });
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({
+        timeout: {
+          phase: 'run-git-sync',
+          git_commands: { active_count: 0 },
+          loose_object_scans: [
+            { repo_path: repoDir, directories_read: 2, objects_checked: 4, last_progress_at: expect.any(Number) },
+            { repo_path: otherRepo, directories_read: 0, objects_checked: 0, last_progress_at: null },
+          ],
+        },
+      });
+    } finally {
+      await vi.advanceTimersByTimeAsync(101);
+      await running;
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('forwards git-sync runId tags to sidecar process execution', async () => {
     const diagnosticTags = {
       runId: '6a2d9e86-5234-4d93-bae1-1b6c9476fcff',

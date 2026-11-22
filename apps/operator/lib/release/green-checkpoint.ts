@@ -8272,12 +8272,20 @@ export interface RepairHeadRadius {
    *  workspace's whole test lane(s), still bounded below the repo-wide full gate. */
   gateIds: string[];
   summary: string;
+  /** The selector's file-level verdict. A full selection can name zero test tasks. */
+  fileSelection?: "selected" | "full";
   /** All producer-declared task/guard/workspace rows were received. Legacy responses
    * still support conservative verification but cannot mint a reusable receipt. */
   coverageComplete?: boolean;
   /** Affected test tasks the selector widened to a whole lane (status=full): their file-level
    *  radius is unknown. 0 on an exact selection. */
   widenedTasks?: number;
+}
+
+function hasExactShadowFileRadius(radius: RepairHeadRadius | null): radius is RepairHeadRadius {
+  // The selector's exactRadiusAdmission requires a nonempty affected-file list.
+  return radius?.fileSelection === "selected" && radius.files.length > 0 &&
+    radius.coverageComplete === true && radius.widenedTasks === 0;
 }
 
 /** Turn the selector's `--changed-paths … --related --print-affected` output into the bounded
@@ -8360,13 +8368,13 @@ export function parseRepairHeadRadius(output: string): RepairHeadRadius | null {
   // One selector-owned summary distinguishes an exact file radius from a bounded widening.
   // In a mixed multi-workspace result the selector emits status=full and no partial file list,
   // so every named affected test task is widened together; nothing is silently under-tested.
+  const summaries = lines.filter(line => line.startsWith("RELATED_AFFECTED_FILES status="));
+  const summary = summaries.length === 1 ? summaries[0]! : "";
+  const exactSummary = /^RELATED_AFFECTED_FILES status=selected workspaces=(\d+) files=(\d+)$/.exec(summary);
+  let fileSelection: RepairHeadRadius["fileSelection"];
+  if (exactSummary) fileSelection = "selected";
+  else if (/^RELATED_AFFECTED_FILES status=full reason=\S+$/.test(summary)) fileSelection = "full";
   if (testTaskIds.size > 0) {
-    const summaries = lines.filter((line) =>
-      line.startsWith("RELATED_AFFECTED_FILES status="),
-    );
-    if (summaries.length !== 1) return null;
-    const summary = summaries[0]!;
-    const exactSummary = /^RELATED_AFFECTED_FILES status=selected workspaces=(\d+) files=(\d+)$/.exec(summary);
     if (exactSummary) {
       const emittedWorkspaces = new Set(files.map((f) => f.workspace));
       const taskWorkspaces = new Set([...testTaskIds].map((id) => parseFailingTaskId(id)?.workspace));
@@ -8387,7 +8395,7 @@ export function parseRepairHeadRadius(output: string): RepairHeadRadius | null {
           return null;
         }
       }
-    } else if (/^RELATED_AFFECTED_FILES status=full reason=\S+$/.test(summary)) {
+    } else if (fileSelection === "full") {
       for (const taskId of testTaskIds) gateIds.add(taskId);
       widenedTasks = testTaskIds.size;
     } else return null;
@@ -8411,17 +8419,15 @@ export function parseRepairHeadRadius(output: string): RepairHeadRadius | null {
     return matches.length === 1 && Number.isSafeInteger(Number(matches[0]![1])) &&
       Number(matches[0]![1]) === rows.length && new Set(rows).size === rows.length;
   };
-  const radiusSummaries = lines.filter((line) => line.startsWith("RELATED_AFFECTED_FILES status="));
-  const fileSummary = /^RELATED_AFFECTED_FILES status=selected workspaces=(\d+) files=(\d+)$/.exec(radiusSummaries[0] ?? "");
   const coverageComplete = countMatches("workspaces", "AFFECTED_WS\t") &&
     countMatches("tasks", "AFFECTED_WS_CMD\t") && countMatches("guards", "AFFECTED_GUARD\t") &&
-    radiusSummaries.length === 1 &&
-    (!fileSummary || (Number(fileSummary[1]) === new Set(files.map((f) => f.workspace)).size &&
-      Number(fileSummary[2]) === files.length)) &&
-    /^RELATED_AFFECTED_FILES status=(?:full reason=\S+|selected workspaces=\d+ files=\d+)$/.test(radiusSummaries[0]!);
+    fileSelection !== undefined &&
+    (!exactSummary || (Number(exactSummary[1]) === new Set(files.map((f) => f.workspace)).size &&
+      Number(exactSummary[2]) === files.length));
   return {
     files,
     gateIds: [...gateIds],
+    fileSelection,
     coverageComplete,
     widenedTasks,
     summary:
@@ -8498,7 +8504,7 @@ export async function shadowComposedProofAtRepairHead(input: {
     try {
       // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/shadowComposedProofAtRepairHead/radius:9005ee100cef0e9c88c8:1","classification":"durable","reason":"The <module>/shadowComposedProofAtRepairHead/radius context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const r = await input.affectedTestsAtRef(input.repairHead, [...paths]);
-      if (!r || (r.widenedTasks ?? 0) > 0 || r.coverageComplete === false) return null;
+      if (!hasExactShadowFileRadius(r)) return null;
       return new Set(r.files.map((f) => f.file));
     } catch {
       return null;
@@ -25711,7 +25717,7 @@ export function realCheckpointDeps(
             );
             if (probe.code !== 0) return null;
             const r = parseRepairHeadRadius(probe.stdout);
-            if (!r || (r.widenedTasks ?? 0) > 0 || r.coverageComplete === false) return null;
+            if (!hasExactShadowFileRadius(r)) return null;
             return new Set(r.files.map(repoPathOf));
           };
           const record = await shadowNewRedEjectionAtCandidate({

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   measureTargetedGateRuns,
+  parseRepairHeadRadius,
   RESCUE_TASK_TIMEOUT_MAX_MS,
   rescueTaskWatchdogOptions,
   validateTargetedGateOutcomes,
@@ -10,6 +11,51 @@ import {
 const HEAD = "a".repeat(40);
 
 describe("targeted gate outcome evidence", () => {
+  it("retains a failing test-prefixed guard beside an exact file selection", async () => {
+    const workspace = "@papercusp/publish-worker";
+    const guardOwner = "@papercusp/operator-core";
+    const guardScript = "test:identity-surfaces";
+    const guardId = `${guardOwner} :: ${guardScript}`;
+    const output = [
+      "AFFECTED_DERIVATION source=explicit changedPaths=1 workspaces=1 guards=1 tasks=2",
+      `AFFECTED_WS\t${workspace}`,
+      `RELATED_SELECTION ws=${workspace} selected=1 total=15 mode=related reason=ok`,
+      `AFFECTED_WS_CMD\t${workspace}\tnpm run --workspace apps/papercusp-publish test`,
+      `AFFECTED_WS_CMD\t${guardOwner}\tnpm run --workspace packages/operator-core ${guardScript}`,
+      `AFFECTED_GUARD\t${guardOwner}\t${guardScript}\tnpm run --workspace ${guardOwner} ${guardScript}`,
+      "RELATED_AFFECTED_FILES status=selected workspaces=1 files=1",
+      `RELATED_AFFECTED_FILE\t${workspace}\tsrc/project-naming.test.ts`,
+    ].join("\n");
+    const radius = parseRepairHeadRadius(output);
+    expect(radius).toMatchObject({
+      files: [{ workspace, file: "src/project-naming.test.ts" }],
+      fileSelection: "selected", coverageComplete: true, widenedTasks: 0, gateIds: [guardId],
+    });
+    const run = vi.fn(async () => ({
+      code: 1, stdout: "", stderr: "guard failed",
+    }));
+    const result = await measureTargetedGateRuns(radius!.gateIds, run);
+    expect(run.mock.calls).toEqual([[guardScript, guardOwner]]);
+    expect(result.pass).toBe(false);
+    expect(result.perGate).toEqual([expect.objectContaining({ id: guardId, status: "fail" })]);
+    expect(parseRepairHeadRadius(output.split("\n").filter(line => !line.startsWith("AFFECTED_GUARD\t")).join("\n"))).toBeNull();
+  });
+
+  it("widens the ordinary test lane once when a test-prefixed guard shares its workspace", () => {
+    const workspace = "@papercusp/operator-core";
+    const command = "npm run --workspace packages/operator-core";
+    const radius = parseRepairHeadRadius([
+      "AFFECTED_DERIVATION source=explicit changedPaths=1 workspaces=1 guards=1 tasks=2",
+      `AFFECTED_WS\t${workspace}`,
+      `AFFECTED_GUARD\t${workspace}\ttest:identity-surfaces\t${command} test:identity-surfaces`,
+      `AFFECTED_WS_CMD\t${workspace}\t${command} test:identity-surfaces`,
+      `AFFECTED_WS_CMD\t${workspace}\t${command} test:lane-pure`,
+      "RELATED_AFFECTED_FILES status=full reason=no-complete-exact-file-radius",
+    ].join("\n"));
+    expect(radius).toMatchObject({ files: [], fileSelection: "full", coverageComplete: true, widenedTasks: 1 });
+    expect([...radius!.gateIds].sort()).toEqual([`${workspace} :: test:identity-surfaces`, `${workspace} :: test:lane-pure`]);
+  });
+
   it("retains bounded stdout and stderr for a clean nonzero task, including failure before test reporting", async () => {
     const result = await measureTargetedGateRuns(["lint:broken", "lint:after"], async (script) => ({
       code: script === "lint:broken" ? 1 : 0,
