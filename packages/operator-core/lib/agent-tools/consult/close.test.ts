@@ -68,6 +68,8 @@ describe('consult:close production task-stopper binding', () => {
       listLiveTasks: expect.any(Function),
       killTask: expect.any(Function),
     });
+    await mocks.consultExpiryStopAnsweringSession.mock.calls[0]![0].killTask('task-under-close');
+    expect(mocks.killTask).toHaveBeenCalledWith('task-under-close', { captureSignalDelivery: true });
     expect(mocks.consultCloseCore).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: 'ws-1',

@@ -41,6 +41,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Sql } from 'postgres';
+import { jsonObject } from './consult-routing-health-primitives';
 import { evidenceIncarnationOwnedBy } from '../session-port/source';
 import type { SessionPortEvidenceSpan } from '../session-port/service';
 import {
@@ -62,7 +63,7 @@ import {
   type ClaudeResumeTranscriptAnalysis,
 } from '../claude-resume-tool-references.mjs';
 import { buildConsoleEnvelope } from '../console-launcher';
-import { reconcileKickoffProof, spawnHeadless, type KickoffProofResult, type SpawnChildExit } from '../console-spawn';
+import { reconcileKickoffProof, spawnHeadless, type HeadlessBootExit, type KickoffProofResult, type SpawnChildExit } from '../console-spawn';
 import type { CascadeSpawnFence } from './cascade-core';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { hostname } from 'node:os';
@@ -363,6 +364,8 @@ export interface ConsultDispatchAttempt {
   launchError?: string;
   /** The durable launch log used to identify a failed spawned rank. */
   launchLogPath?: string;
+  /** Exact child created for this rank, even when it failed before its first native receipt. */
+  bootTask?: { taskId: string; answeringOwnerId: string; pid: number | null; exit?: HeadlessBootExit };
   /**
    * Set on a `dispatched` rank whose first reply had not landed when the
    * first-turn window closed (EI-27111739698817170). It names what the consult
@@ -1061,7 +1064,8 @@ export function dispatchRecordEntry(input: ConsultDispatchRecordInput, nowIso: s
       ...(a.accountRouteReason ? { accountRouteReason: clip(a.accountRouteReason) } : {}),
       detail: clip(a.detail),
       ...(a.launchError ? { launchError: clip(a.launchError, 300) } : {}),
-      ...(a.launchLogPath ? { launchLogPath: clip(a.launchLogPath) } : {}),
+      ...(a.launchLogPath ? { launchLogPath: a.launchLogPath } : {}),
+      ...(a.bootTask ? { bootTask: a.bootTask } : {}),
       // A clipped path would name no file, so an over-long one is dropped rather
       // than clipped; the sweep then leaves that slot to bounded pickup recovery.
       ...(a.firstTurnUnjudged && a.firstTurnUnjudged.transcriptPath.length <= DISPATCH_RECORD_TEXT_MAX
@@ -1262,8 +1266,46 @@ export interface PersistedDispatchRecord {
     model?: string;
     launchError?: string;
     launchLogPath?: string;
+    bootTask?: ConsultDispatchAttempt['bootTask'];
+    /** Read-time attribution alongside the unchanged launcher verdict. */
+    closeInterruption?: { closePostId: number; closedBy: string; controlRequestId: string };
     detail?: string;
   }>;
+}
+
+/** Join at read time: either the failed walk or the completed close can be written first. */
+export function consultAttemptsForAccounting(
+  record: PersistedDispatchRecord, conversationId: string, closeTaskStops: unknown,
+): NonNullable<PersistedDispatchRecord['attempts']> {
+  const attempts = Array.isArray(record.attempts) ? record.attempts : [];
+  if (!closeTaskStops) return attempts;
+  const stops = Object.entries(jsonObject(closeTaskStops));
+  return attempts.map(attempt => {
+    const task = attempt?.bootTask;
+    const exit = task?.exit;
+    if (attempt?.outcome !== 'failed' || attempt.reason !== 'launch-failed' || attempt.launchError ||
+        !task?.taskId || !task.answeringOwnerId || !task.pid || !record.sourceOwnerId || !attempt.launchLogPath ||
+        !exit || exit.code !== null || exit.signal !== 'SIGTERM' || !Array.isArray(exit.controlRequestIds) ||
+        exit.controlRequestIds.length !== 1 || !exit.controlRequestIds[0]) return attempt;
+
+    const matches = stops.filter(([, value]) => jsonObject(value).taskId === task.taskId);
+    if (matches.length !== 1) return attempt;
+    const [key, value] = matches[0]!;
+    const stop = jsonObject(value);
+    const delivery = jsonObject(stop.deliveredSignal);
+    if (stop.status !== 'accepted' || typeof stop.closePostId !== 'number' || !Number.isSafeInteger(stop.closePostId) ||
+        stop.closePostId < 1 || key !== `${stop.closePostId}:${task.taskId}` ||
+        typeof stop.closedBy !== 'string' || !stop.closedBy || stop.closedBy === task.answeringOwnerId ||
+        stop.conversationId !== conversationId || stop.sourceOwnerId !== record.sourceOwnerId ||
+        stop.answeringOwnerId !== task.answeringOwnerId || stop.launchLogPath !== attempt.launchLogPath ||
+        typeof stop.requestedAt !== 'string' || typeof stop.completedAt !== 'string' ||
+        delivery.id !== exit.controlRequestIds[0] || delivery.pid !== task.pid || delivery.signal !== exit.signal) return attempt;
+
+    // The child observer saw this operation before its actual signal exit. A control
+    // success in another runtime, a second request, or a log quoting a signal lacks that proof.
+    return { ...attempt, closeInterruption: { closePostId: stop.closePostId, closedBy: stop.closedBy,
+      controlRequestId: exit.controlRequestIds[0] } };
+  });
 }
 
 export interface SourceCooldown {
@@ -1302,7 +1344,7 @@ export function sourceCooldownFrom(
     if (nowMs - at > lookbackMs) break;
     if (record.dispatched === true) break;
     for (const attempt of record.attempts ?? []) {
-      if (attempt?.outcome !== 'failed' || !attempt.reason || !LAUNCH_FAILURE_REASONS.has(attempt.reason)) continue;
+      if (attempt?.outcome !== 'failed' || attempt.closeInterruption || !attempt.reason || !LAUNCH_FAILURE_REASONS.has(attempt.reason)) continue;
       failures += 1;
       if (newestFailureAt == null) {
         newestFailureAt = at;
@@ -1334,8 +1376,8 @@ export async function readSourceDispatchRecords(
   // (measured 2026-09-26: p99 8 h, max 32 h over 1,300 consults), so a walk
   // appended to a long-lived consult is still seen. Records carry an ISO `at`
   // from toISOString(), which compares correctly as text.
-  const rows = await sql<Array<{ e: unknown }>>`
-    SELECT r.e
+  const rows = await sql<Array<{ e: unknown; conversation_id: string; close_stops: unknown }>>`
+    SELECT r.e, c.conversation_id, c.outcome->'closeTaskStops' AS close_stops
       FROM harness_shared.consult_state c
      CROSS JOIN LATERAL jsonb_array_elements(c.dispatch_attempts) AS r(e)
      WHERE c.workspace_id = ${workspaceId}
@@ -1346,9 +1388,12 @@ export async function readSourceDispatchRecords(
      ORDER BY r.e->>'at' DESC
      LIMIT ${limit}
   `;
-  return rows
-    .map((row) => (typeof row.e === 'string' ? (JSON.parse(row.e) as unknown) : row.e))
-    .filter((e): e is PersistedDispatchRecord => !!e && typeof e === 'object' && typeof (e as { at?: unknown }).at === 'string');
+  return rows.flatMap(row => {
+    const raw = jsonObject(row.e);
+    if (typeof raw.at !== 'string') return [];
+    const record = raw as unknown as PersistedDispatchRecord;
+    return [row.close_stops ? { ...record, attempts: consultAttemptsForAccounting(record, row.conversation_id, row.close_stops) } : record];
+  });
 }
 
 /** Default reader: {@link readSourceDispatchRecords} through the org pool. */
@@ -2636,6 +2681,7 @@ async function launchAnsweringSession(
     await lease.release();
   };
   let spawn: Awaited<ReturnType<ConsultDispatchDeps['spawnHeadless']>>;
+  let createdTask: { taskId: string; pid: number | null; logPath: string } | undefined;
   try {
     spawn = await d.spawnHeadless({
     envelope: {
@@ -2695,6 +2741,8 @@ async function launchAnsweringSession(
       },
     },
     kickoffProof: true,
+    observeBootSignals: true,
+    onProcessCreated: (receipt) => { createdTask = receipt; },
     beforeSpawn: async () => {
       spawnLease = await d.reserveConsultSpawnLease(ctx.workspaceId, opts.conversationId,
         opts.spawnFence ? { ...opts.spawnFence, answeringOwnerId } : undefined);
@@ -2710,6 +2758,10 @@ async function launchAnsweringSession(
   if (spawn.status !== 'ok') {
     if (spawn.cancelled) return consultClosed();
     const launchError = await d.readLaunchLogReason(spawn.logPath);
+    const bootTask = createdTask && createdTask.logPath === spawn.logPath ? {
+      taskId: createdTask.taskId, answeringOwnerId, pid: createdTask.pid,
+      ...(spawn.bootExit ? { exit: spawn.bootExit } : {}),
+    } : undefined;
     const result = failed(
       'launch-failed',
       `spawn failed (code ${spawn.code}): ${spawn.error}` +
@@ -2722,6 +2774,7 @@ async function launchAnsweringSession(
         ...result.record,
         ...(spawn.logPath ? { launchLogPath: spawn.logPath } : {}),
         ...(launchError ? { launchError } : {}),
+        ...(bootTask ? { bootTask } : {}),
       },
     };
   }

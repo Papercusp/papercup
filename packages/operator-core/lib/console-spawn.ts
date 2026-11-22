@@ -70,6 +70,7 @@ import { CLIENT_SERVER_TERMINALS, PROCESS_PER_WINDOW_TERMINALS } from './linux-t
 import { prepareGnomeTerminal } from './gnome-terminal-profile.mjs';
 import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment, syncEnrolmentScopePath } from './task-manager/enroll-sync';
 import { killTask } from './task-manager/control';
+import { onTaskKillRequested } from './task-manager/kill-notify';
 import { scopeUnitForTask, sliceForClass } from './task-manager/types';
 import { warmScopeProbe } from './task-manager/managed-spawn';
 import {
@@ -1400,7 +1401,17 @@ export type SpawnConsoleResult =
       /** Retired enrolled task and authoritative refusal, retained for recovery. */
       taskId?: string;
       kickoffProof?: KickoffProofResult;
+      /** Actual child exit observed during boot. A shell exit status is never decoded as a signal. */
+      bootExit?: HeadlessBootExit;
     };
+
+export interface HeadlessBootExit {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  observedAt: string;
+  /** Managed requests witnessed for this task before the exit. Null identifies an uncorrelated request. */
+  controlRequestIds?: Array<string | null>;
+}
 
 /** Detached-child lifecycle evidence exposed after a spawn result is returned. */
 export interface SpawnChildExit {
@@ -1576,9 +1587,12 @@ async function waitForKickoffProof(
 }
 
 /** Keep observing a detached child after the bounded early-exit probe ends. */
-function observeChildExit(child: ChildProcess): Promise<SpawnChildExit> {
+function observeChildExit(child: ChildProcess, onExit?: (code: number | null, signal: NodeJS.Signals | null) => void): Promise<SpawnChildExit> {
   return new Promise((resolve) => {
-    child.once('exit', (code, signal) => resolve({ code, signal }));
+    child.once('exit', (code, signal) => {
+      onExit?.(code, signal);
+      resolve({ code, signal });
+    });
     child.once('error', (error) => resolve({ code: null, signal: null, error }));
   });
 }
@@ -2364,6 +2378,8 @@ export function headlessNormalizedLogPath(logPath: string): string {
 }
 
 export interface SpawnHeadlessOpts {
+  /** Include locally witnessed task-control requests in a boot exit observation. */
+  observeBootSignals?: boolean;
   /** Envelope from `buildConsoleEnvelope` (cwd, env, greetingCmd) — greetingCmd MUST
    *  be a `psu --headless …` command for the session to stay injectable. */
   envelope: ConsoleEnvelope;
@@ -2471,7 +2487,10 @@ export interface SpawnHeadlessOpts {
 // entirely on the escaped path) logs a clear, self-diagnosing breadcrumb
 // instead of a bare `Terminated`. Exported + pure (string in, string out) for
 // testing.
-export function wrapHeadlessSigtermDiagnostic(oneliner: string): string {
+export function wrapHeadlessSigtermDiagnostic(oneliner: string, preserveSignal = false): string {
+  // A consult observer needs wait(2) to distinguish TERM from a program choosing
+  // exit status 143. Re-raise only a TERM the shell actually received.
+  const finish = preserveSignal ? 'trap - TERM; kill -s TERM "$BASHPID"; exit 143' : 'exit 143';
   const trap =
     `trap 'echo "[EI-9748] SIGTERM received at $(date -u +%FT%TZ) — on this host, if the ` +
     `systemd-run --user --scope cgroup escape (EI-9748 Route A, landed 2026-07-11) succeeded ` +
@@ -2480,7 +2499,7 @@ export function wrapHeadlessSigtermDiagnostic(oneliner: string): string {
     `restarts) — look elsewhere: a manual kill, host reboot/shutdown, or OOM. Only on a host ` +
     `WITHOUT systemd-run on PATH (no escape available, plain detached child) does an ` +
     `operator-service restart remain a likely cause. See work-item EI-9748 for detail." >&2; ` +
-    `exit 143' TERM`;
+    `${finish}' TERM`;
   return `${trap}; ${oneliner}`;
 }
 
@@ -2780,6 +2799,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
       label,
       scheme: null,
     }, null, false, false),
+    opts.observeBootSignals,
   );
   let logFd: number | null = null;
   try {
@@ -2795,6 +2815,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
   // the task enrolment so a long wait never leaves a half-enrolled task.
   let installLease: InstallBoundaryLease | null = null;
   let spawnGuardHeld = false;
+  let stopObservingSignals: (() => void) | undefined;
   const releaseSpawnGuard = async (): Promise<void> => {
     if (!spawnGuardHeld) return;
     spawnGuardHeld = false;
@@ -2878,7 +2899,20 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     });
     // Install both observers synchronously after spawn(): a child may exit on
     // its first microtask, including while the consult reservation is released.
-    const childExit = observeChildExit(child);
+    let bootExit: HeadlessBootExit | undefined;
+    const controlRequestIds: Array<string | null> = [];
+    if (opts.observeBootSignals) {
+      stopObservingSignals = onTaskKillRequested((id, signal, delivery) => {
+        if (id === enrolment.taskId) controlRequestIds.push(
+          delivery && delivery.pid === child.pid && delivery.signal === signal ? delivery.id : null,
+        );
+      });
+    }
+    const childExit = observeChildExit(child, (code, signal) => {
+      bootExit = { code, signal, observedAt: new Date().toISOString(),
+        ...(opts.observeBootSignals ? { controlRequestIds: [...controlRequestIds] } : {}) };
+      stopObservingSignals?.();
+    });
     const earlyExitProbe = watchEarlyExit(child, EARLY_EXIT_PROBE_MS);
     child.unref();
     // The consult close path locks the same row. Release that reservation at
@@ -2965,6 +2999,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
           `${logTail ? ` — log tail: ${logTail}` : ` — see ${logPath}`}`,
         code: 502,
         logPath,
+        bootExit,
       };
     }
 
@@ -3074,6 +3109,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
           `${logTail ? ` — log tail: ${logTail}` : ` — see ${logPath}`}`,
         code: 502,
         logPath,
+        bootExit,
       };
     }
 
@@ -3128,6 +3164,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     return { status: 'error', error: `headless spawn failed: ${e?.message}`, code: 500, logPath };
   } finally {
     // Idempotent; covers every early-return and throw path above.
+    stopObservingSignals?.();
     await releaseSpawnGuard();
     installLease?.release();
   }

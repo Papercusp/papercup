@@ -993,6 +993,21 @@ describe('dispatchConsultResponder — the walk', () => {
     expect(r).toMatchObject({ dispatched: true, agent: 'codex' });
   });
 
+  it('preserves the exact task, OS exit and complete log identity on a failed boot rank', async () => {
+    const { deps, calls } = makeFakes({ loadRanks: async () => [RANKS[0]!] });
+    const logPath = '/logs/' + 'segment/'.repeat(80) + 'boot.log';
+    const exit = { code: null, signal: 'SIGTERM' as const, observedAt: new Date(NOW_MS).toISOString() };
+    deps.spawnHeadless = async (opts) => {
+      await opts.onProcessCreated?.({ taskId: 'boot-task', pid: 4242, logPath, normalizedLogPath: logPath + '.jsonl' });
+      return { status: 'error', code: 502, error: 'ended before kickoff', logPath, bootExit: exit };
+    };
+    await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(dispatchRecordEntry(calls.recorded[0]!, exit.observedAt)).toMatchObject({ attempts: [{
+      outcome: 'failed', reason: 'launch-failed', launchLogPath: logPath,
+      bootTask: { taskId: 'boot-task', pid: 4242, answeringOwnerId: 'su-answer-1', exit },
+    }] });
+  });
+
   it('treats an unpersisted kickoff as a FAILED rank — an unsubmitted brief is a phantom responder', async () => {
     const { deps } = makeFakes({}, { spawnStatuses: ['no-proof', 'ok'] });
     const r = await dispatchConsultResponder(OPTS, CTX, deps);

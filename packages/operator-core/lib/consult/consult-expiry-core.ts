@@ -318,6 +318,17 @@ function reviewProgressGuard(ownerId: string | null, routedAt: string, nowIso: s
   } : undefined;
 }
 
+export type ConsultTaskStopObservation = {
+  taskId: string;
+  sourceOwnerId: string | null;
+  answeringOwnerId: string | null;
+  launchLogPath: string | null;
+} & (
+  | { phase: 'requested' }
+  | { phase: 'completed'; status: 'accepted' | 'already_gone' | 'refused' | 'error'; errorCode?: string;
+      deliveredSignal?: import('../task-manager/kill-notify').TaskSignalDelivery }
+);
+
 export interface ExpirySweepDeps {
   /** Resume a durably queued disposition's next launch. */
   resumeCascadeDispatch?: (workspaceId: string, conversationId: string) => Promise<boolean>;
@@ -384,7 +395,7 @@ export interface ExpirySweepDeps {
     conversationId: string;
     answeringOwnerId: string | null;
     sourceOwnerId: string;
-  }) => Promise<string>;
+  }, observe?: (observation: ConsultTaskStopObservation) => Promise<void>) => Promise<string>;
   now?: () => Date;
   /** Override the per-tick bound (tests). */
   limit?: number;

@@ -20,6 +20,7 @@ const countsShape = z
     declined: z.number(),
     failed: z.number(),
     failedReasons: z.record(z.string(), z.number()),
+    cancelledDuringBoot: z.number(),
     hung: z.number(),
     pending: z.number(),
     skipped: z.number(),

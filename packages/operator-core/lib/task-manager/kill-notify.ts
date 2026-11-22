@@ -40,7 +40,10 @@
  * so the reverse import would be circular.
  */
 
-export type TaskKillListener = (taskId: string, signal: NodeJS.Signals) => void;
+/** An operation id links an observed request to its eventual control result. */
+export interface TaskSignalDelivery { id: string; pid: number; signal: NodeJS.Signals }
+
+export type TaskKillListener = (taskId: string, signal: NodeJS.Signals, delivery?: TaskSignalDelivery) => void;
 
 const listeners = new Set<TaskKillListener>();
 
@@ -58,10 +61,10 @@ export function onTaskKillRequested(listener: TaskKillListener): () => void {
  * run. A listener that throws must never break the kill path reporting it —
  * errors are caught and logged, never rethrown.
  */
-export function notifyTaskKillRequested(taskId: string, signal: NodeJS.Signals): void {
+export function notifyTaskKillRequested(taskId: string, signal: NodeJS.Signals, delivery?: TaskSignalDelivery): void {
   for (const listener of listeners) {
     try {
-      listener(taskId, signal);
+      listener(taskId, signal, delivery);
     } catch (e) {
       console.warn(
         `[task-manager] kill-notify listener threw for task ${taskId}: ${e instanceof Error ? e.message : String(e)}`,

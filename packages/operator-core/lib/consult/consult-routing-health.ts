@@ -47,7 +47,7 @@ import {
 export { expertiseExecutionHealthFromRows };
 export type { ExpertiseExecutionHealth };
 import { HARD_BLOCKED_EXPIRY_MS, PROCEED_EXPIRY_MS } from './get-feedback-core';
-import { DISPATCH_RECORDS_MAX } from './consult-dispatch';
+import { consultAttemptsForAccounting, DISPATCH_RECORDS_MAX } from './consult-dispatch';
 import { noQualifiedResponderIsUnmeasured, reviewConsultKind } from './consult-expiry-core';
 import { CONSULT_RECONCILIATION_DISPOSITIONS, type ConsultReconciliationDisposition } from './consult-verbs-core';
 import {
@@ -108,6 +108,8 @@ export interface PolicyRoutingHealth {
   declined: number;
   failed: number;
   failedReasons: Record<string, number>;
+  /** Boot attempts interrupted by the verified task signal of an authenticated consultation close. */
+  cancelledDuringBoot: number;
   hung: number;
   pending: number;
   skipped: number;
@@ -166,7 +168,7 @@ function emptyRequestCounts(): RequestDeliveryHealth {
   };
 }
 
-function requestOutcome(row: RoutingHealthConsultRow, nowMs: number): keyof RequestDeliveryHealth['outcomes'] {
+function requestOutcome(row: RoutingHealthConsultRow, walks: WalkRecord[], nowMs: number): keyof RequestDeliveryHealth['outcomes'] {
   const outcome = jsonObject(row.outcome);
   const answer = outcome.source === 'archive' ? jsonObject(outcome.answer).answer : outcome.answer;
   // A typed receipt outranks expiry, decline and recovered launch failures.
@@ -176,7 +178,6 @@ function requestOutcome(row: RoutingHealthConsultRow, nowMs: number): keyof Requ
   // The recoverable acceptance phase is pending work before any launch. A
   // legacy routing label or an already recorded result does not prove that.
   if (row.state === 'routing' && request.version === 1 && request.result == null) return 'pending';
-  const walks = parseWalks(row.dispatch_attempts);
   const expiresMs = toMs(row.expires_at);
   const open = ['awaiting_responder', 'active', 'budget_exhausted'].includes(row.state);
   if (open && Number.isFinite(expiresMs) && nowMs < expiresMs) return 'pending';
@@ -190,14 +191,14 @@ function requestOutcome(row: RoutingHealthConsultRow, nowMs: number): keyof Requ
   if (attempts.length > 0 && attempts.every((attempt) =>
     attempt.outcome === 'skipped' && attempt.reason === 'account-walled')) return 'unavailable';
   if (walks.some((walk) => walk.answerFailure != null) ||
-      attempts.some((attempt) => attempt.outcome === 'failed') ||
+      attempts.some((attempt) => attempt.outcome === 'failed' && !attempt.closeInterruption) ||
       (walks.some((walk) => walk.dispatched) &&
         (row.state === 'expired' || (Number.isFinite(expiresMs) && nowMs >= expiresMs)))) return 'failed';
   // Missing recorder/expiry evidence is not proof of a delivery failure.
   return 'unmeasured';
 }
 
-function recordFollowThrough(row: RoutingHealthConsultRow, counts: RequestDeliveryHealth, nowMs: number) {
+function recordFollowThrough(row: RoutingHealthConsultRow, walks: WalkRecord[], counts: RequestDeliveryHealth, nowMs: number) {
   const follow = counts.followThrough;
   if (row.latency_contract === 'hard-blocked') { follow.notApplicable += 1; return; }
   if (row.latency_contract !== 'proceed') { follow.applicabilityUnknown += 1; return; }
@@ -215,7 +216,7 @@ function recordFollowThrough(row: RoutingHealthConsultRow, counts: RequestDelive
     return;
   }
   follow.recorded[disposition] += 1;
-  if (requestOutcome(row, nowMs) === 'received') follow.recordedWithFeedback += 1;
+  if (requestOutcome(row, walks, nowMs) === 'received') follow.recordedWithFeedback += 1;
   else follow.recordedWithoutFeedback += 1;
 }
 
@@ -240,7 +241,7 @@ interface WalkRecord {
   atMs: number;
   dispatched: boolean;
   answeringOwnerId: string | null;
-  attempts: Array<{ outcome?: unknown; reason?: unknown }>;
+  attempts: Array<{ outcome?: unknown; reason?: unknown; closeInterruption?: { closePostId: number } }>;
   answerFailure: { reason: string } | null;
 }
 
@@ -271,9 +272,10 @@ function toMs(value: unknown): number {
   return Number.NaN;
 }
 
-function parseWalks(value: unknown): WalkRecord[] {
+function parseWalks(row: RoutingHealthConsultRow): WalkRecord[] {
   const out: WalkRecord[] = [];
-  for (const raw of jsonArray(value)) {
+  const closeStops = jsonObject(row.outcome).closeTaskStops;
+  for (const raw of jsonArray(row.dispatch_attempts)) {
     const e = (typeof raw === 'string' ? safeParse(raw) : raw) as Record<string, unknown> | null;
     if (!e || typeof e !== 'object') continue;
     const atMs = toMs(e.at);
@@ -283,7 +285,10 @@ function parseWalks(value: unknown): WalkRecord[] {
       atMs,
       dispatched: e.dispatched === true,
       answeringOwnerId: typeof e.answeringOwnerId === 'string' ? e.answeringOwnerId : null,
-      attempts: Array.isArray(e.attempts) ? (e.attempts as WalkRecord['attempts']) : [],
+      attempts: consultAttemptsForAccounting({ at: String(e.at),
+        sourceOwnerId: typeof e.sourceOwnerId === 'string' ? e.sourceOwnerId : undefined,
+        attempts: Array.isArray(e.attempts) ? e.attempts : [],
+      }, row.conversation_id, closeStops),
       answerFailure:
         af && typeof af === 'object' ? { reason: typeof af.reason === 'string' ? af.reason : 'unknown' } : null,
     });
@@ -312,6 +317,7 @@ function emptyCounts(): Omit<PolicyRoutingHealth, 'policy'> {
     declined: 0,
     failed: 0,
     failedReasons: {},
+    cancelledDuringBoot: 0,
     hung: 0,
     pending: 0,
     skipped: 0,
@@ -355,20 +361,20 @@ export function routingHealthFromRows(
       c = emptyCounts();
       byPolicy.set(policy, c);
     }
+    const records = parseWalks(row);
     if (inWindow(toMs(row.created_at))) {
       const requests = requestPolicies.get(policy) ?? emptyRequestCounts();
       requestPolicies.set(policy, requests);
       requests.requests += 1;
-      recordFollowThrough(row, requests, nowMs);
+      recordFollowThrough(row, records, requests, nowMs);
       const intent = jsonObject(row.routing).deliveryIntent;
       if (intent === 'retrieval-only') requests.retrievalOnly += 1;
       else if (intent !== 'dispatch') requests.legacyIntentUnknown += 1;
       else {
         requests.dispatchRequested += 1;
-        requests.outcomes[requestOutcome(row, nowMs)] += 1;
+        requests.outcomes[requestOutcome(row, records, nowMs)] += 1;
       }
     }
-    const records = parseWalks(row.dispatch_attempts);
     c.consults += 1;
     if (records.length === 0) c.consultsWithoutDispatchRecords += 1;
     if (jsonArray(row.dispatch_attempts).length >= DISPATCH_RECORDS_MAX) dispatchLogCapped += 1;
@@ -383,7 +389,9 @@ export function routingHealthFromRows(
     for (const walk of walks) {
       if (!inWindow(walk.atMs)) continue;
       for (const attempt of walk.attempts) {
-        if (attempt?.outcome === 'failed') {
+        if (attempt?.outcome === 'failed' && attempt.closeInterruption) {
+          c.cancelledDuringBoot += 1;
+        } else if (attempt?.outcome === 'failed') {
           c.failed += 1;
           bump(c.failedReasons, attempt.reason);
         } else if (attempt?.outcome === 'skipped') {
@@ -468,6 +476,7 @@ export function routingHealthFromRows(
       'answered',
       'declined',
       'failed',
+      'cancelledDuringBoot',
       'hung',
       'pending',
       'skipped',

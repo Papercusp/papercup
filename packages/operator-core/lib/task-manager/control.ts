@@ -22,11 +22,12 @@
  */
 
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { linuxPpidFromProcStat, linuxProcStateFromStat, readProcessGroupId, readProcessIdentity } from '../process-identity';
 import { absCgroupDir, nodeCgroupFs, walkCgroupTree, type CgroupFs } from './cgroup-read';
 import { reportFreezeDeadlines, type InnerTimeoutHint, type LedgerDeadline } from './freeze-deadline';
-import { notifyTaskKillRequested } from './kill-notify';
+import { notifyTaskKillRequested, type TaskSignalDelivery } from './kill-notify';
 import { inspectTaskUnitTerminals, type ExecFileFn } from './scope-terminal-state';
 import { closeTask, getSubtree, getTask, reopenStrandedTask, updateTaskLimits } from './store';
 import { isLiveOwnedState, taskIdFromScopeUnit, type TaskRow, type TaskTerminalProvenance } from './types';
@@ -58,6 +59,8 @@ export type ControlOutcome =
       taskId: string;
       action: string;
       detail?: string;
+      /** The initial signal reached the control boundary for this verified root PID. */
+      deliveredSignal?: TaskSignalDelivery;
       /** freeze/thaw only (EI-24796665684871321): wall-clock deadlines the task carries — the
        *  freezer stops CPU, never the clock, so a deadline keeps burning while frozen. */
       deadline?: LedgerDeadline | null;
@@ -154,6 +157,8 @@ export function verifyPidStillOurs(
 }
 
 export interface KillTaskOptions extends ControlDeps {
+  /** Capture a correlated signal receipt when the live root was positively identified. */
+  captureSignalDelivery?: boolean;
   /** Escalate SIGTERM -> SIGKILL after this long. 0 disables escalation. */
   escalateAfterMs?: number;
   signal?: NodeJS.Signals;
@@ -384,14 +389,18 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
     // round-trip. The same resolution serves the post-signal verification below, so
     // a row whose stored path does not validate still costs exactly one `show`.
     const scopeCgroup = await resolveRowScopeCgroup(row, d);
-    const emptyBeforeSignal = countCgroupProcesses(scopeCgroup, d) === 0;
+    const members = collectCgroupPids(scopeCgroup, d);
+    const emptyBeforeSignal = members.size === 0;
+    const identity = opts.captureSignalDelivery && row.pid && members.has(row.pid)
+      ? verifyPidStillOurs(row, d) : null;
+    const delivery = identity?.ok && !identity.weak ? { id: randomUUID(), pid: identity.pid, signal } : undefined;
     // EI-21905196224862433: announce kill-intent BEFORE the signal actually goes
     // out. A confined job's Node-side watcher is the `systemd-run --pipe --wait`
     // CLIENT, not the payload — that client exits 0 once the unit is gone
     // regardless of whether it ended normally or was killed here, so a listener
     // (capability:bash's job registry) needs this notice to land before the
     // client can possibly have exited and its close handler run.
-    notifyTaskKillRequested(taskId, signal);
+    notifyTaskKillRequested(taskId, signal, delivery);
     const res = await systemctl(['kill', `--signal=${signal}`, row.scopeUnit], d);
     if (!res.ok) {
       // The payload exited on its own and systemd collected the scope: nothing
@@ -494,6 +503,7 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
       taskId,
       action: 'kill',
       detail: `scope ${row.scopeUnit} signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''} — verified empty`,
+      ...(delivery && !escalated && !stopFallback ? { deliveredSignal: delivery } : {}),
     };
   }
 
@@ -516,12 +526,14 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
   const groupLeader = d.readProcessGroup(verdict.pid) === verdict.pid;
   const target = groupLeader ? -verdict.pid : verdict.pid;
   const targetLabel = groupLeader ? `process group ${verdict.pid}` : `pid ${verdict.pid}`;
+  const delivery = opts.captureSignalDelivery && !verdict.weak
+    ? { id: randomUUID(), pid: verdict.pid, signal } : undefined;
   try {
     // EI-21905196224862433: same kill-intent notice as the confined path above —
     // an UNCONFINED job's watched child IS the real payload, so its own close
     // handler already sees `code===null, signal===<sig>` correctly, but the
     // notice is cheap to send unconditionally and keeps both paths consistent.
-    notifyTaskKillRequested(taskId, signal);
+    notifyTaskKillRequested(taskId, signal, delivery);
     d.kill(target, signal);
   } catch (e) {
     return { ok: false, taskId, action: 'kill', error: 'command_failed', detail: (e as Error).message };
@@ -553,6 +565,7 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
     ok: true,
     taskId,
     action: 'kill',
+    ...(delivery && !escalated ? { deliveredSignal: delivery } : {}),
     detail: verdict.weak
       ? `${targetLabel} signalled ${how} (WEAK: row never captured a kernel identity)`
       : `${targetLabel} signalled ${how}`,

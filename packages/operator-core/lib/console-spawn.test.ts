@@ -44,6 +44,7 @@ import {
   type DesktopEnvProbes,
 } from './console-spawn';
 import type { ConsoleEnvelope } from './console-launcher';
+import { notifyTaskKillRequested } from './task-manager/kill-notify';
 
 const prepareProfileMock = vi.hoisted(() => vi.fn(async (terminal: { bin: string; args: string[] }) => terminal));
 vi.mock('./gnome-terminal-profile.mjs', () => ({
@@ -678,6 +679,36 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
   // with whichever host/CI runner actually runs the suite (same class of bug
   // findLinuxTerminal's _resetTerminalCacheForTests exists for).
   const noSystemdRun = { spawnCommandProbes: { hasSystemdRun: () => false } };
+
+  it.each([
+    { code: null, signal: 'SIGTERM' }, { code: 143, signal: null },
+  ])('retains the observed boot exit $code/$signal even before enrollment returns', async ({ code, signal }) => {
+    const child = fakeChild(7796);
+    spawnMock.mockImplementation(() => child);
+    const created = vi.fn();
+    const result = await spawnHeadless({ envelope, label: 'observed-boot-exit', ...noSystemdRun,
+      beforeSpawn: async () => true,
+      afterSpawn: async () => { child.emit('exit', code, signal); }, onProcessCreated: created,
+    });
+    expect(created).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'task1234', pid: 7796 }));
+    expect(result).toMatchObject({ status: 'error', bootExit: { code, signal, observedAt: expect.any(String) } });
+  });
+
+  it('captures only the task signal requests witnessed before a boot exit', async () => {
+    const child = fakeChild(7796);
+    spawnMock.mockImplementation(() => child);
+    const result = await spawnHeadless({ envelope, label: 'boot-signal-requests', ...noSystemdRun,
+      observeBootSignals: true, beforeSpawn: async () => true,
+      afterSpawn: async () => {
+        notifyTaskKillRequested('other', 'SIGTERM');
+        notifyTaskKillRequested('task1234', 'SIGTERM', { id: 'first', pid: 7796, signal: 'SIGTERM' });
+        notifyTaskKillRequested('task1234', 'SIGTERM');
+        child.emit('exit', null, 'SIGTERM');
+        notifyTaskKillRequested('task1234', 'SIGTERM');
+      },
+    });
+    expect(result).toMatchObject({ status: 'error', bootExit: { code: null, signal: 'SIGTERM', controlRequestIds: ['first', null] } });
+  });
 
   it.each([
     { code: 0, signal: null, state: 'exited' },
@@ -2001,6 +2032,15 @@ describe('spawnConsole — the VISIBLE-terminal window escapes the operator cgro
 });
 
 describe('wrapHeadlessSigtermDiagnostic (EI-9748)', () => {
+  it('preserves a real shell TERM for a boot observer and keeps an independent exit 143 distinguishable', () => {
+    const term = spawnSync('bash', ['-c', wrapHeadlessSigtermDiagnostic('kill -s TERM "$BASHPID"', true)]);
+    expect(term.signal).toBe('SIGTERM');
+    expect(term.status).toBeNull();
+    expect(term.stderr.toString()).toContain('SIGTERM received');
+    const independent = spawnSync('bash', ['-c', wrapHeadlessSigtermDiagnostic('exit 143', true)]);
+    expect(independent.signal).toBeNull();
+    expect(independent.status).toBe(143);
+  });
   it('prepends a TERM trap that logs + exits 143, then runs the original oneliner unmodified', () => {
     const out = wrapHeadlessSigtermDiagnostic("cd '/proj' ; (eval 'psu --headless')");
     expect(out.startsWith("trap '")).toBe(true);

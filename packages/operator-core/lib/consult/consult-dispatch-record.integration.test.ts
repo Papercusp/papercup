@@ -202,6 +202,30 @@ describe('readSourceDispatchRecords (real Postgres) — the cool-down read', () 
   const OTHER_WS = 'ws-dispatch-record-other';
   const SINCE = '2026-09-26T00:00:00.000Z';
 
+  it('joins a completed close signal after the failed boot walk while preserving the raw ledger', async () => {
+    const id = 'conv-boot-cancel', source = 'su-boot-expert', at = '2026-09-26T03:30:00.000Z';
+    await seed(id);
+    const record = input(id, 'observed OS signal before kickoff');
+    record.sourceOwnerId = source;
+    const attempt = record.result.attempts[0]!;
+    Object.assign(attempt, { reason: 'launch-failed', launchLogPath: '/exact/log', bootTask: {
+      taskId: 't', pid: 82, answeringOwnerId: 'next', exit: { code: null, signal: 'SIGTERM', observedAt: at, controlRequestIds: ['operation'] },
+    } });
+    await appendDispatchRecord(sql, record, at);
+    const cooldown = async () => sourceCooldownFrom(await readSourceDispatchRecords(sql, WS, source, SINCE), Date.parse(at), { threshold: 1 });
+    expect(await cooldown()).toMatchObject({ failures: 1 });
+    await sql`UPDATE harness_shared.consult_state SET outcome = ${sql.json({ closeTaskStops: { '7:t': {
+      conversationId: id, closePostId: 7, closedBy: 'first', requestedAt: at, completedAt: at, status: 'accepted',
+      taskId: 't', sourceOwnerId: source, answeringOwnerId: 'next', launchLogPath: '/exact/log',
+      deliveredSignal: { id: 'operation', pid: 82, signal: 'SIGTERM' },
+    } } })} WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    expect(await cooldown()).toBeNull();
+    expect(await readSourceDispatchRecords(sql, WS, source, SINCE)).toMatchObject([{ attempts: [{
+      outcome: 'failed', reason: 'launch-failed', closeInterruption: { closePostId: 7, closedBy: 'first', controlRequestId: 'operation' },
+    }] }]);
+    expect(await readRecords(id)).toMatchObject([{ attempts: [{ outcome: 'failed', reason: 'launch-failed', bootTask: { taskId: 't' } }] }]);
+  });
+
   function walk(conversationId: string, sourceOwnerId: string, workspaceId = WS): ConsultDispatchRecordInput {
     return { ...input(conversationId, `walk-${conversationId}`), workspaceId, sourceOwnerId };
   }

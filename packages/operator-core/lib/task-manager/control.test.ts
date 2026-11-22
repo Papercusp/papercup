@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
-import { linuxProcStateFromStat } from '../process-identity';
+import { linuxProcStateFromStat, readProcessIdentity } from '../process-identity';
 import { onTaskKillRequested } from './kill-notify';
 import type { TaskRow, TaskState } from './types';
 
@@ -125,6 +126,21 @@ describe('verifyPidStillOurs — the recycled-pid rail', () => {
 });
 
 describe('killTask — confined path', () => {
+  it.each([true, false])('issues a close signal receipt only for the verified scope root (member=%s)', async member => {
+    const id = 'boot-receipt';
+    row({ taskId: id, pid: 4242, processIdentity: 'boot-fixture' });
+    const calls: string[] = [];
+    const out = await killTask(id, { captureSignalDelivery: true, readIdentity: () => 'boot-fixture',
+      fs: liveUntilSignalled(member ? calls : ['pc-boot-receipt.scope']),
+      execFileAsync: async (_file, args) => {
+        if (args.includes('kill')) calls.push('pc-boot-receipt.scope');
+        return { stdout: '', stderr: '' };
+      },
+    });
+    expect(out.ok).toBe(true);
+    if (member) expect(out).toHaveProperty('deliveredSignal', { id: expect.any(String), pid: 4242, signal: 'SIGTERM' });
+    else expect(out).not.toHaveProperty('deliveredSignal');
+  });
   it('kills by SCOPE, never by pid', async () => {
     row({ taskId: 'b1', pid: 4242 });
     const calls: string[][] = [];
@@ -1054,6 +1070,27 @@ describe('killTask — external kill-intent notice, unconfined pid path (EI-2190
 });
 
 describe('killTask — unconfined process group (EI-24635523980082322)', () => {
+  it('correlates a close signal receipt with the actual exit of its verified child process', async () => {
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 15000)'], { stdio: 'ignore' });
+    const exited = once(child, 'exit');
+    const notices: unknown[] = [];
+    const unsubscribe = onTaskKillRequested((id, _signal, delivery) => { if (id === 'boot-signal') notices.push(delivery); });
+    try {
+      await once(child, 'spawn');
+      const pid = child.pid!;
+      const identity = readProcessIdentity(pid);
+      expect(identity).toBeTruthy();
+      row({ taskId: 'boot-signal', confined: false, scopeUnit: null, pid, processIdentity: identity });
+      const result = await killTask('boot-signal', { captureSignalDelivery: true });
+      expect(result).toMatchObject({ ok: true, deliveredSignal: { id: expect.any(String), pid, signal: 'SIGTERM' } });
+      expect(notices).toEqual([result.ok && result.deliveredSignal]);
+      await expect(exited).resolves.toEqual([null, 'SIGTERM']);
+    } finally {
+      unsubscribe();
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await exited;
+    }
+  });
   it('signals the whole group when the verified pid leads it (a detached launch)', async () => {
     row({ taskId: 'g1', confined: false, scopeUnit: null, pid: 68752, processIdentity: 'darwin:t0' });
     const kill = vi.fn();

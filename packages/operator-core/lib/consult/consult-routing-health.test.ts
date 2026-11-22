@@ -147,6 +147,55 @@ const SEEDED: RoutingHealthConsultRow[] = [
 const byPolicy = (result: ReturnType<typeof routingHealthFromRows>) =>
   Object.fromEntries(result.policies.map((p) => [p.policy, p]));
 
+describe('close during boot', () => {
+  const exit = { code: null, signal: 'SIGTERM', observedAt: iso(T0 + H), controlRequestIds: ['control-1'] };
+  const task = { taskId: 'task-1', pid: 123, answeringOwnerId: 'next-answerer', exit };
+  const attempt = { outcome: 'failed', reason: 'launch-failed', launchLogPath: '/logs/next', bootTask: task };
+  const stop = { taskId: task.taskId, conversationId: 'thread', closePostId: 7, closedBy: 'first-answerer',
+    sourceOwnerId: 'src', answeringOwnerId: task.answeringOwnerId, launchLogPath: attempt.launchLogPath,
+    requestedAt: iso(T0), completedAt: iso(T0 + H), status: 'accepted',
+    deliveredSignal: { id: 'control-1', pid: task.pid, signal: 'SIGTERM' } };
+  function health(closeTaskStops: object, failed: object = attempt) {
+    return routingHealthFromRows([row({ conversation_id: 'thread', created_at: iso(T0), state: 'closed_answered',
+      closed_at: iso(T0 + H), outcome: { answer: 'use the tested source', closeTaskStops },
+      routing: { deliveryIntent: 'dispatch' }, dispatch_attempts: [launch(T0, 'first-answerer'),
+        { sourceOwnerId: 'src', dispatched: false, at: iso(T0 + H), attempts: [failed] }],
+    })], { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW });
+  }
+  it('retains the first answer and counts a witnessed, authenticated close signal for the exact failed boot task', () => {
+    const measured = health({ '7:task-1': stop });
+    expect(measured.totals).toMatchObject({ answered: 1, failed: 0, cancelledDuringBoot: 1, skipped: 0 });
+    expect(measured.requestCohort.totals.outcomes.received).toBe(1);
+    expect(attempt.outcome).toBe('failed');
+  });
+  it.each([
+    ['independent launcher refusal', { ...attempt, launchError: 'psu: fork failed to restore' }, stop],
+    ['numeric exit 143', { ...attempt, bootTask: { ...task, exit: { ...exit, code: 143, signal: null } } }, stop],
+    ['different process signal', { ...attempt, bootTask: { ...task, exit: { ...exit, signal: 'SIGKILL' } } }, stop],
+    ['no witnessed control', { ...attempt, bootTask: { ...task, exit: { ...exit, controlRequestIds: [] } } }, stop],
+    ['competing control', { ...attempt, bootTask: { ...task, exit: { ...exit, controlRequestIds: ['control-1', null] } } }, stop],
+    ['legacy walk', { outcome: 'failed', reason: 'launch-failed' }, stop],
+    ['already empty', attempt, { ...stop, deliveredSignal: undefined }],
+    ['refused', attempt, { ...stop, status: 'refused' }],
+    ['uncompleted', attempt, { ...stop, completedAt: undefined }],
+    ['other control operation', attempt, { ...stop, deliveredSignal: { ...stop.deliveredSignal, id: 'control-2' } }],
+    ['other pid', attempt, { ...stop, deliveredSignal: { ...stop.deliveredSignal, pid: 456 } }],
+    ['other task', attempt, { ...stop, taskId: 'task-2' }],
+    ['other conversation', attempt, { ...stop, conversationId: 'other' }],
+    ['other source', attempt, { ...stop, sourceOwnerId: 'other' }],
+    ['other answerer', attempt, { ...stop, answeringOwnerId: 'other' }],
+    ['other close post', attempt, { ...stop, closePostId: 8 }],
+    ['other launch log', attempt, { ...stop, launchLogPath: '/other' }],
+  ] as const)('keeps the boot failure for %s', (_label, rawAttempt, receipt) => {
+    expect(health({ '7:task-1': receipt }, rawAttempt).totals).toMatchObject({ answered: 1, failed: 1,
+      failedReasons: { 'launch-failed': 1 }, cancelledDuringBoot: 0 });
+  });
+  it('retains ambiguity when two closes claim the same task', () => {
+    expect(health({ '7:task-1': stop, '8:task-1': { ...stop, closePostId: 8 } }).totals)
+      .toMatchObject({ failed: 1, cancelledDuringBoot: 0 });
+  });
+});
+
 describe('routingHealthFromRows — seeded attempts in and out of the window', () => {
   const result = routingHealthFromRows(SEEDED, { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW });
   const p = byPolicy(result);

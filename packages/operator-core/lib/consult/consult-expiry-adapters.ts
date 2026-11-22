@@ -39,7 +39,7 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import type { SendOptions } from '../agent-tools/coordination/messages';
 import type { NotifyAgentsOpts, NotifyAgentsResult } from '../agent-tools/coordination/notify-agents';
 import type { EmitAwaitedEventOpts, EmitResult } from '../events/await/engine';
-import type { ExpirySweepDeps, SilentResponderCandidate } from './consult-expiry-core';
+import type { ConsultTaskStopObservation, ExpirySweepDeps, SilentResponderCandidate } from './consult-expiry-core';
 import type { CascadeDispatch } from './cascade-core';
 import { DEAD_RESPONDER_STATES, HARD_BLOCKED_EXPIRY_MS } from './get-feedback-core';
 import type { PriorRespawn } from '../carry-respawn-outcome';
@@ -641,8 +641,9 @@ function firstLine(text: string, cap: number): string {
 
 /** The task-manager seams {@link consultExpiryStopAnsweringSession} needs, declared structurally. */
 export interface AnsweringSessionTaskSeams {
-  listLiveTasks: (workspaceId: string) => Promise<readonly Pick<TaskRow, 'taskId' | 'class' | 'detail'>[]>;
-  killTask: (taskId: string) => Promise<{ ok: boolean; error?: string; detail?: string }>;
+  listLiveTasks: (workspaceId: string) => Promise<readonly (Pick<TaskRow, 'taskId' | 'class' | 'detail'> & { logPath?: string | null })[]>;
+  killTask: (taskId: string) => Promise<{ ok: boolean; error?: string; detail?: string;
+    deliveredSignal?: import('../task-manager/kill-notify').TaskSignalDelivery }>;
 }
 
 /**
@@ -659,20 +660,35 @@ export interface AnsweringSessionTaskSeams {
 export function consultExpiryStopAnsweringSession(
   seams: AnsweringSessionTaskSeams,
 ): NonNullable<ExpirySweepDeps['stopAnsweringSession']> {
-  return async ({ workspaceId, conversationId, answeringOwnerId, sourceOwnerId }) => {
+  return async ({ workspaceId, conversationId, answeringOwnerId, sourceOwnerId }, observe) => {
+    const record = async (event: ConsultTaskStopObservation) => {
+      try {
+        await observe?.(event);
+      } catch (error) {
+        console.warn(`[consult] could not record ${event.phase} stop for ${conversationId}/${event.taskId}`, error);
+      }
+    };
     try {
-      const matches = (await seams.listLiveTasks(workspaceId)).filter((row) => {
-        if (row.class !== 'agent-session') return false;
+      const matches = (await seams.listLiveTasks(workspaceId)).flatMap((row) => {
+        if (row.class !== 'agent-session') return [];
         const facts = consultAnswerFacts(row);
-        if (!facts || facts.conversationId !== conversationId) return false;
-        if (facts.sourceOwnerId) return facts.sourceOwnerId === sourceOwnerId;
-        return answeringOwnerId != null && facts.answeringOwnerId === answeringOwnerId;
+        if (!facts || facts.conversationId !== conversationId) return [];
+        const sameSlot = facts.sourceOwnerId ? facts.sourceOwnerId === sourceOwnerId
+          : answeringOwnerId != null && facts.answeringOwnerId === answeringOwnerId;
+        return sameSlot ? [{ taskId: row.taskId, sourceOwnerId: facts.sourceOwnerId,
+          answeringOwnerId: facts.answeringOwnerId, launchLogPath: row.logPath ?? null }] : [];
       });
       if (matches.length === 0) return 'no live answering session found';
       const outcomes: string[] = [];
       for (const row of matches) {
+        await record({ ...row, phase: 'requested' });
         try {
           const o = await seams.killTask(row.taskId);
+          await record({ ...row, phase: 'completed',
+            status: o.ok ? 'accepted' : o.error === 'already_gone' ? 'already_gone' : 'refused',
+            ...(o.ok && o.deliveredSignal ? { deliveredSignal: o.deliveredSignal } : {}),
+            ...(!o.ok && o.error ? { errorCode: o.error } : {}),
+          });
           outcomes.push(
             o.ok
               ? `stopped task ${row.taskId}`
@@ -681,6 +697,7 @@ export function consultExpiryStopAnsweringSession(
                 : `stop of task ${row.taskId} refused: ${o.error ?? 'unknown'}`,
           );
         } catch (e) {
+          await record({ ...row, phase: 'completed', status: 'error' });
           outcomes.push(`stop of task ${row.taskId} threw: ${(e as Error)?.message ?? String(e)}`);
         }
       }
