@@ -78,17 +78,40 @@ export function scanSource(raw: string, file: string): Array<{
 export function dispositionFor(row: any, dispositions: any): any;
 /** Is a disposition entry well-formed? migrate needs a P-NNN item; not-applicable a reason. */
 export function dispositionProblem(d: any): string | null;
+/** Produce the coverage diagnostics shared by the lint, acceptance check and seed writer. */
+export function inventoryCoverageProblems(live: any): string[];
 /**
  * Inventory a set of repo-relative files under `root`. `readFile` is injectable for tests.
  * Returns every bypass row with its resolved disposition, every site (on the rail or not), and
  * coverage counters.
+ * @param {{root: string, files: Iterable<string>, dispositions?: Record<string, any>, readFile?: (file: string) => string,
+ *   submodules?: Omit<ReturnType<typeof listFilesIncludingUntracked>, 'files'> & {outsideScanScope: string[]}}} input
  */
-export function inventory({ root, files, dispositions, readFile }: {
-    root: any;
-    files: any;
-    dispositions?: {} | undefined;
-    readFile: any;
+export function inventory({ root, files, dispositions, readFile, submodules }: {
+    root: string;
+    files: Iterable<string>;
+    dispositions?: Record<string, any>;
+    readFile?: (file: string) => string;
+    submodules?: Omit<ReturnType<typeof listFilesIncludingUntracked>, "files"> & {
+        outsideScanScope: string[];
+    };
 }): {
+    byClass: {
+        [k: string]: number;
+    };
+    undispositioned: number;
+    staleDispositions: string[];
+    unreadableFiles: string[];
+    submodules: (Omit<{
+        declared: any;
+        scanned: any[];
+        unscanned: any[];
+        unscannedPresent: any[];
+        unscannedAbsent: any[];
+        files: any;
+    }, "files"> & {
+        outsideScanScope: string[];
+    }) | undefined;
     rows: {
         disposition: any;
         problem: string | null;
@@ -115,14 +138,25 @@ export function inventory({ root, files, dispositions, readFile }: {
     }[];
     scanned: number;
     unreadable: number;
-    byClass: {
-        [k: string]: number;
-    };
-    undispositioned: number;
-    staleDispositions: string[];
 };
 /** The canonical tree inventory used by the CLI and manifest checks. @param {string} root */
 export function inventoryTree(root: string): {
+    byClass: {
+        [k: string]: number;
+    };
+    undispositioned: number;
+    staleDispositions: string[];
+    unreadableFiles: string[];
+    submodules: (Omit<{
+        declared: any;
+        scanned: any[];
+        unscanned: any[];
+        unscannedPresent: any[];
+        unscannedAbsent: any[];
+        files: any;
+    }, "files"> & {
+        outsideScanScope: string[];
+    }) | undefined;
     rows: {
         disposition: any;
         problem: string | null;
@@ -149,11 +183,6 @@ export function inventoryTree(root: string): {
     }[];
     scanned: number;
     unreadable: number;
-    byClass: {
-        [k: string]: number;
-    };
-    undispositioned: number;
-    staleDispositions: string[];
 };
 /**
  * Validate the immutable audit against live sites. In-progress migrate rows must retain their
@@ -215,3 +244,4 @@ export const TYPE_ONLY_VALUE_RE: RegExp;
 export const INTERVAL_RE: RegExp;
 export const DEFINE_SIGNAL_RE: RegExp;
 export const WAIVER_RE: RegExp;
+import { listFilesIncludingUntracked } from './tracked-files.mjs';
