@@ -1,0 +1,5 @@
+{
+  "origin": "http://127.0.0.1:3170",
+  "runtimeUnits": ["hono-host:3170"],
+  "requiredEnv": ["PAPERCUSP_OPERATOR_URL", "PAPERCUSP_SID", "PAPERCUSP_TEST_RUN_WORKSPACE"]
+}
