@@ -5982,7 +5982,7 @@ if (relatedOnly) {
       // its own AFFECTED_GUARD leg, which the repair-head consumer runs beside the exact files.
       // A changed global runner input still widens fully (see exact-radius-admission.mjs).
       const admission = exactRadiusAdmission({
-        everyTaskNarrowable: tasks.every((task) => narrowable(task.script)),
+        everyTaskNarrowable: tasks.every((task) => task.isInvariantGuard === true || narrowable(task.script)),
         affectedFileCount: affectedFiles.length,
         changedPaths: invariantGuardChangedPaths(),
       });

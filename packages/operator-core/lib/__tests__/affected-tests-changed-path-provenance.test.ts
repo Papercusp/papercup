@@ -316,6 +316,27 @@ describe('changed-path provenance: through the real CLI', () => {
     expect(stdout).not.toContain('AFFECTED_TESTS_RESULT');
   });
 
+  it('keeps an exact unit file selection alongside separately runnable invariant guards', () => {
+    const workspace = '@papercusp/publish-worker';
+    const file = 'src/project-naming.test.ts';
+    const { stdout } = probe(['--changed-paths', `apps/papercusp-publish/${file}`, '--related']);
+    const lines = stdout.trimEnd().split('\n');
+    const guards = lines.filter(line => line.startsWith('AFFECTED_GUARD\t'));
+    expect(guards.length).toBeGreaterThan(0);
+    expect(markerField(markerLines(stdout)[0]!, 'guards')).toBe(String(guards.length));
+    expect(lines.filter(line => line.startsWith('RELATED_AFFECTED_FILES '))).toEqual([
+      'RELATED_AFFECTED_FILES status=selected workspaces=1 files=1',
+    ]);
+    expect(lines.filter(line => line.startsWith('RELATED_AFFECTED_FILE\t'))).toEqual([
+      `RELATED_AFFECTED_FILE\t${workspace}\t${file}`,
+    ]);
+    for (const guard of guards) {
+      const [, owner, script] = guard.split('\t');
+      expect(lines.some(line => line.startsWith(`AFFECTED_WS_CMD\t${owner}\t`)
+        && line.split('\t')[2]!.split(' ').includes(script!)), guard).toBe(true);
+    }
+  });
+
   it('emits exactly one marker for an explicit path set, and no banner', () => {
     const { stdout, stderr } = probe(['--changed-paths', 'scripts/lint-tsc.mjs']);
     const lines = markerLines(stdout);
