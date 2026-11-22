@@ -1061,6 +1061,30 @@ describe('consultExpiryStopAnsweringSession (WI-10003199, P-003)', () => {
     expect(unstamped.killed).toEqual([]);
   });
 
+  it('records each matched task before the stop and distinguishes a refused or vanished task from an accepted stop', async () => {
+    const tag = { conversationId: 'conv-1', sourceOwnerId: 'src-1', answeringOwnerId: 'fork-1' };
+    const rows = ['stopped', 'gone', 'refused', 'threw'].map(id => tagged(id, tag));
+    rows.push(tagged('different-consult', { ...tag, conversationId: 'other' }));
+    const timeline: string[] = [];
+    const s = seams(rows, async id => {
+      timeline.push(`stop:${id}`);
+      if (id === 'threw') throw new Error('control unavailable');
+      if (id === 'gone') return { ok: false, error: 'already_gone' };
+      if (id === 'refused') return { ok: false, error: 'identity_mismatch' };
+      return { ok: true };
+    });
+    await consultExpiryStopAnsweringSession(s.seams)(target, async event => {
+      expect(event).toMatchObject({ answeringOwnerId: 'fork-1', sourceOwnerId: 'src-1' });
+      timeline.push(`${event.phase === 'requested' ? 'request' : event.status}:${event.taskId}`);
+    });
+    expect(timeline).toEqual([
+      'request:stopped', 'stop:stopped', 'accepted:stopped',
+      'request:gone', 'stop:gone', 'already_gone:gone',
+      'request:refused', 'stop:refused', 'refused:refused',
+      'request:threw', 'stop:threw', 'error:threw',
+    ]);
+  });
+
   it('reports no session, an already-gone task, a refusal and a failed lookup without throwing', async () => {
     expect(await consultExpiryStopAnsweringSession(seams([]).seams)(target)).toBe('no live answering session found');
     const row = tagged('t-slot', { conversationId: 'conv-1', sourceOwnerId: 'src-1' });
