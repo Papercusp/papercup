@@ -130,7 +130,7 @@ describe('P005 runtime-specific passing proofs', () => {
       const bin = join(workspaceRoot, 'node_modules/.bin');
       mkdirSync(bin, { recursive: true });
       mkdirSync(join(root, 'node_modules'));
-      mkdirSync(join(root, 'scripts'));
+      mkdirSync(join(root, 'scripts/lib'), { recursive: true });
       writeFileSync(join(root, 'package-lock.json'), '{"lockfileVersion":3}');
       writeFileSync(join(root, 'node_modules/.papercusp-dependency-generation'),
         `identity=v1-${'a'.repeat(64)}\nsource=${'a'.repeat(64)}\n`);
@@ -138,6 +138,7 @@ describe('P005 runtime-specific passing proofs', () => {
       symlinkSync(process.env.PAPERCUSP_RUNTIME_TEST_BUN || process.execPath, join(bin, 'node'));
       writeFileSync(join(root, 'scripts/pc-heavy.sh'), '#!/usr/bin/env bash\nexec "$@"\n', { mode: 0o755 });
       writeFileSync(join(root, 'scripts/run-vitest-pure-lane.mjs'), 'spawn("vitest")\n');
+      writeFileSync(join(root, 'scripts/lib/vitest-lane-ledger.mjs'), 'export const ledger = 1;\n');
       writeFileSync(join(root, 'scripts/other.sh'), '#!/usr/bin/env bash\nexec "$@"\n', { mode: 0o755 });
       const capture = (scriptText: string) =>
         captureNpmTaskRuntimeIdentity({ root, workspaceRoot, scriptText, environment: process.env });
@@ -151,6 +152,7 @@ describe('P005 runtime-specific passing proofs', () => {
       expect(capture(pure)?.launcherDigests).toEqual({
         script: sha(pure), 'scripts/pc-heavy.sh': sha(readFileSync(join(root, 'scripts/pc-heavy.sh'))),
         'scripts/run-vitest-pure-lane.mjs': sha(readFileSync(join(root, 'scripts/run-vitest-pure-lane.mjs'))),
+        'scripts/lib/vitest-lane-ledger.mjs': sha(readFileSync(join(root, 'scripts/lib/vitest-lane-ledger.mjs'))),
       });
       // The bare form keeps its pre-existing identity: no launcherDigests key at all.
       const bare = capture('vitest run --passWithNoTests');
@@ -172,6 +174,10 @@ describe('P005 runtime-specific passing proofs', () => {
       writeFileSync(join(root, 'scripts/pc-heavy.sh'), '#!/usr/bin/env bash\nexport X=1\nexec "$@"\n');
       const after = identity({ runtimeIdentity: capture(stateful) });
       expect(before.fingerprint).not.toBe(after.fingerprint);
+      const beforeLedgerEdit = identity({ runtimeIdentity: capture(pure) });
+      writeFileSync(join(root, 'scripts/lib/vitest-lane-ledger.mjs'), 'export const ledger = 2;\n');
+      const afterLedgerEdit = identity({ runtimeIdentity: capture(pure) });
+      expect(beforeLedgerEdit.fingerprint).not.toBe(afterLedgerEdit.fingerprint);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

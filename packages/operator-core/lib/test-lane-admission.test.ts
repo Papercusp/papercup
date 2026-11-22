@@ -1,7 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import {
   REUSE_SKIP_LIST_SCHEMA,
@@ -17,6 +18,7 @@ import {
   runPureLaneShards,
   runVitestProcess,
 } from '../../../scripts/run-vitest-pure-lane.mjs';
+import { runStatefulLane } from '../../../scripts/run-vitest-stateful-lane.mjs';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
 const PACKAGE_JSON = resolve(REPO_ROOT, 'packages/operator-core/package.json');
@@ -63,7 +65,7 @@ async function shardArgsFor(options: Parameters<typeof runPureLaneShards>[0]) {
 describe('operator-core test-lane admission', () => {
   it.each([
     ['test:lane-pure', 'PC_TEST_LANE=pure ../../scripts/pc-heavy.sh -- node ../../scripts/run-vitest-pure-lane.mjs'],
-    ['test:lane-stateful', 'PC_TEST_LANE=stateful ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests && npm run test:node-maintenance'],
+    ['test:lane-stateful', 'PC_TEST_LANE=stateful ../../scripts/pc-heavy.sh -- node ../../scripts/run-vitest-stateful-lane.mjs && npm run test:node-maintenance'],
   ])('%s routes its Vitest lane through pc-heavy', (scriptName, expected) => {
     const command = scripts[scriptName];
 
@@ -127,6 +129,51 @@ describe('operator-core test-lane admission', () => {
       '--shard=1/5', '--shard=2/5', '--shard=3/5', '--shard=4/5', '--shard=5/5',
     ]);
     expect(code).toBe(134);
+  });
+
+  it.each(['pure', 'stateful'].flatMap(lane => [
+    { lane, childExit: 0, fileCount: 2, recorded: true, expectedExit: 0 },
+    { lane, childExit: 0, fileCount: 2, recorded: false, expectedExit: 2 },
+    { lane, childExit: 23, fileCount: 2, recorded: false, expectedExit: 23 },
+    { lane, childExit: 0, fileCount: 0, recorded: true, expectedExit: 0 },
+  ]))('qualifies $lane ledger evidence with $fileCount files and child exit $childExit (gives $expectedExit)', async ({ lane, childExit, fileCount, recorded, expectedExit }) => {
+    const files = laneFiles(fileCount);
+    const runGroupId = 'native-ledger-test';
+    let directory: string | undefined;
+    let receiptFile: string | undefined;
+    const lines: string[] = [];
+    try {
+      const runLane = lane === 'pure' ? runPureLaneShards : runStatefulLane;
+      const code = await runLane({
+        env: { PAPERCUSP_TEST_RUN_GROUP: runGroupId, PAPERCUSP_TEST_RUN_SOURCE: 'ci' },
+        forwardedArgs: ['--maxWorkers=1'], pureFiles: laneFiles(2), reuseSkipFiles: [], wsAbsDir: REPO_ROOT,
+        stderr: { write: (chunk) => { lines.push(String(chunk)); return true; } },
+        run: async (args, { env }) => {
+          expect(args).toEqual(['run', '--passWithNoTests', '--maxWorkers=1']);
+          const manifestFile = env.PAPERCUSP_TEST_RUN_SHARD_MANIFEST!;
+          receiptFile = env.PAPERCUSP_TEST_RUN_RECOVERY_FILE!;
+          directory = dirname(manifestFile);
+          expect(env.PAPERCUSP_TEST_RUN_RECEIPT_FILE).toBeUndefined();
+          await writeFile(manifestFile, JSON.stringify({ version: 1, root: REPO_ROOT, runGroupId,
+            selected: files, outcomes: files.map(path => ({ path, state: 'passed' })),
+            reason: childExit === 0 ? 'passed' : 'failed' }));
+          const finishedAt = '2026-11-22T03:00:00.000Z';
+          await writeFile(receiptFile, files.slice(0, recorded ? 2 : 1).map((filePath, index) => JSON.stringify({
+            filePath, receiptId: `receipt-${index}`, attempt: 0, status: 'pass', outcome: 'inserted', id: String(index + 1),
+            row: { filePath, startedAt: finishedAt, finishedAt, executionDetails: { root: REPO_ROOT } },
+          })).join('\n'));
+          return childExit;
+        },
+      });
+      expect(code).toBe(expectedExit);
+      const audit = JSON.parse(await readFile(join(directory!, '1.ledger.json'), 'utf8'));
+      expect(audit).toMatchObject({ runGroupId, exitStatus: childExit,
+        state: recorded ? 'complete' : 'incomplete', missingFiles: recorded ? [] : files.slice(1), missingOutcomes: [] });
+      expect(existsSync(receiptFile!)).toBe(!recorded);
+      expect(lines.join('')).toContain(`VITEST_${lane.toUpperCase()}_LANE_LEDGER`);
+    } finally {
+      if (directory) await rm(directory, { recursive: true, force: true });
+    }
   });
 
   // gate-test-reuse-yield-2026-10-01 P-006 (D-005): the pure lane applies the pass-reuse skip list.

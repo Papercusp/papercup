@@ -8,6 +8,7 @@ import { resolveLaneInclude } from "@papercusp/test-config/lane-split";
 import { resolveReuseSkipFiles } from "@papercusp/test-config/test-pass-reuse-skip";
 import { prepareVerifierRuntimeProof } from "./lib/runtime-compatibility.mjs";
 import { reuseSkipCoversRun } from "./lib/empty-suite-guard.mjs";
+import { openVitestLaneLedger } from "./lib/vitest-lane-ledger.mjs";
 import {
   buildGovernedProcessDemand,
   classifyGovernedTestProcessOutcome,
@@ -174,7 +175,8 @@ export function remainingPureLaneFiles(pureFiles, reuseSkipFiles = []) {
 }
 
 /**
- * Run every shard for complete failure inventory; return the first non-zero result.
+ * Run every shard for complete failure inventory. Preserve the first non-zero
+ * child exit. A passing CI run requires complete ledger evidence as well.
  *
  * Pass reuse (gate-test-reuse-yield-2026-10-01 P-006, D-005): `reuseSkipFiles` is the skip list
  * resolved by the SAME validating reader each shard's vitest config applies
@@ -186,7 +188,7 @@ export function remainingPureLaneFiles(pureFiles, reuseSkipFiles = []) {
 export async function runPureLaneShards({
   env = process.env,
   forwardedArgs = process.argv.slice(2),
-  run = (args) => runVitestProcess(args, { env }),
+  run = (args, options) => runVitestProcess(args, options),
   stderr = process.stderr,
   wsAbsDir = process.cwd(),
   pureFiles = resolveLaneInclude(wsAbsDir, "pure").include ?? [],
@@ -224,20 +226,24 @@ export async function runPureLaneShards({
     positiveInteger(env[key]),
   ).filter((value) => value !== null);
   const workerCap = workerCaps.length > 0 ? Math.min(...workerCaps) : "default";
+  const ledger = await openVitestLaneLedger({ lane: "pure", env, wsAbsDir, stderr });
   let result = 0;
+  let ledgerComplete = true;
   for (let shard = 1; shard <= shardCount; shard += 1) {
     const args = buildPureLaneShardArgs(shard, shardCount, forwardedArgs);
+    const shardEnv = ledger.envForShard(shard);
     stderr.write(
       `VITEST_PURE_LANE_SHARD state=started shard=${shard}/${shardCount} ` +
         `workerCap=${workerCap} pureFiles=${pureFileCount} reused=${reused}\n`,
     );
-    const code = await run(args);
+    const code = await run(args, { env: shardEnv });
     stderr.write(
       `VITEST_PURE_LANE_SHARD state=finished shard=${shard}/${shardCount} exitStatus=${code}\n`,
     );
     if (result === 0 && code !== 0) result = code;
+    if (!await ledger.settle({ env: shardEnv, argv: args, code, shard })) ledgerComplete = false;
   }
-  return result;
+  return result || (ledgerComplete ? 0 : 2);
 }
 
 // No top-level await: green-checkpoint.ts reaches this module through

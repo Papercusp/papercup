@@ -1109,7 +1109,8 @@ export function capturePassingTaskRuntimeIdentity({ root, cwd = root, environmen
  * admission wrapper (it exports only PC_HEAVY_* and `exec "$@"`), and
  * `node <repo>/scripts/run-vitest-pure-lane.mjs` (it spawns the same PATH-resolved `vitest`)
  * leave the test interpreter unchanged. Their bytes and the script text join the identity as
- * `launcherDigests`, so editing a wrapper or the lane prefix invalidates verdicts proved under it.
+ * `launcherDigests`, including the pure launcher's shared ledger code, so editing a wrapper or
+ * the lane prefix invalidates verdicts proved under it.
  * Any OTHER assignment stays opaque: `NODE_OPTIONS=--require=x` changes the runtime, and x's
  * bytes are in no identity field. A bare `vitest run` script keeps its pre-existing identity
  * byte for byte.
@@ -1137,6 +1138,7 @@ function unwrapNpmTestScript({ root, workspaceRoot, scriptText }) {
   const pure = PURE_LANE_SCRIPT.exec(rest);
   if (pure && repoFile(pure[1], "scripts/run-vitest-pure-lane.mjs")) {
     digest("scripts/run-vitest-pure-lane.mjs");
+    digest("scripts/lib/vitest-lane-ledger.mjs");
     return { launcherDigests };
   }
   // `node <repo>/scripts/workspace-test.mjs <fixed args>` (the @papercusp/web scripts). Ask the
