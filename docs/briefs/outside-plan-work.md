@@ -124,3 +124,25 @@ inference service so that the member processes can call the operator offline.
 ```sh
 npm run test:file -- packages/operator-core/lib/agent-tools/fleet_registry/__tests__/outside-plan-native.integration.test.ts
 ```
+
+## Acceptance evidence
+
+The native replay `outside-fleet-replay-368Nhl` ran two installed Codex members
+with scripted inference, loopback networking and a private PostgreSQL database.
+The process exited with code 0 after cleanup. The evidence files below are in
+that run's directory under `~/.papercusp/test-artifacts/`.
+
+| Brief case | Evidence |
+| --- | --- |
+| 1. Single agent | The offline `single` phase in `outside-plan-restart.mts` bound the session, held one item, edited and read back two files, and completed the item. It used the actual tool handlers and checked the empty plan table. The launch HTTP suite separately exercised the bootstrap and public MCP identity read. |
+| 2. Kernel text | The same-profile assembled prompt diff shows the outside planning rule and the requirement to hold a work-item. The kernel and source diffs above cover the other instruction surfaces. |
+| 3. Leader and members | `outside-native-work-order.json` records the two first claims, the prerequisite completion, then the dependent claim and completion. `outside-native-leader-calls.json` records the leader's committed completion. |
+| 4. Unrelated work | `outside-native-traffic.json` records the unrelated item open and unassigned. The claim sequence includes exactly the three admitted IDs. |
+| 5. Planning nudges | The single-session test checks declaration, creation and completion replies. The fleet traffic capture includes delivered member input, tool output and the three post-drain fleet reads. It recorded zero matching planning instructions, plan calls or owner requests, and the database contained zero plans. |
+| 6. Inheritance and visibility | `outside-native-restart.json` records the reference on the leader, both original member sessions and four items. `outside-native-briefs.json` contains the exact reference, including whitespace, punctuation, newline and emoji, in status, assignments and the leader brief. |
+| 7. Conflicting bindings | The offline single-session test supplies both bindings and checks that the refusal names both. |
+| 8. Ordinary sessions | The AUTO single-session control in `stack-binding-channel.test.ts` verifies that the ordinary prompt still requires planning and its activation audit. The explanatory wording changes are listed above. This control checks the instructions supplied to the session. |
+| 9. Restart | `outside-native-restart.json` records two distinct operator PIDs. Both epochs returned identical references, exact claim filter, original member identities and held claims. The members then resumed and finished. |
+
+The traffic capture identifies two scenarios outside its observed coverage,
+an independently forced mid-task wake and an owner-authored follow-up.
