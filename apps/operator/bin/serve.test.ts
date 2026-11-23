@@ -943,6 +943,16 @@ describe("cold-start lock (singleton guard)", () => {
     serve.releaseColdStartLock();
   });
 
+  it("reclaims a predecessor's lock that happens to carry this process's pid", () => {
+    // A serve killed in a container leaves its pid behind; the next serve on the
+    // same state directory is started at the same pid.
+    mkdirSync(pcDir(), { recursive: true });
+    writeFileSync(lockFile(), String(process.pid));
+    expect(serve.acquireColdStartLock()).toBe(true); // not ours until we take it
+    expect(serve.acquireColdStartLock()).toBe(false); // now it is
+    serve.releaseColdStartLock();
+  });
+
   it("creates ~/.papercusp if it does not exist yet (fresh machine)", () => {
     rmSync(pcDir(), { recursive: true, force: true });
     expect(serve.acquireColdStartLock()).toBe(true);

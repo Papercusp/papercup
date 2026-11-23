@@ -623,6 +623,9 @@ export function exportResolvedPortEnv(
   env.PAPERCUSP_OPERATOR_BASE = `http://127.0.0.1:${port}`;
 }
 
+/** Whether THIS process took the cold-start lock (see acquireColdStartLock). */
+let coldStartLockHeldHere = false;
+
 /**
  * Cold-start singleton guard. Atomically create the lockfile (O_EXCL) with our
  * pid. Returns true if acquired. If a *live* owner holds it, returns false.
@@ -667,6 +670,7 @@ export function acquireColdStartLock(
     // any other writer mkdir's it — create it owner-only first.
     mkdirSync(PAPERCUSP_DIR, { recursive: true, mode: 0o700 });
     writeFileSync(LOCK_PATH, String(process.pid), { flag: "wx" });
+    coldStartLockHeldHere = true;
     return true;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
@@ -680,9 +684,27 @@ export function acquireColdStartLock(
           }
         })(),
       ) || 0;
-    // Our own pid = we already hold it; never reclaim out from under
-    // ourselves.
-    if (ownerPid === process.pid) return false;
+    // Our own pid AND this process wrote it = we already hold it; never
+    // reclaim out from under ourselves.
+    //
+    // Our own pid in a lock this process did NOT write is a predecessor's: a
+    // serve that was killed without releasing (container stopped, OOM, node
+    // lost) while its state directory outlived it. A container starts its
+    // processes at the same low pids every time, so the next serve on that
+    // state gets the dead one's pid — measured: a lock holding `7`, read by a
+    // new serve whose own pid was 7, refused every boot until the file was
+    // removed by hand. The liveness test below cannot tell the two apart (the
+    // pid is alive and its cmdline is serve — it is us), so the only proof of
+    // ownership is having taken the lock in this process.
+    if (ownerPid === process.pid) {
+      if (coldStartLockHeldHere || retried) return false;
+      try {
+        unlinkSync(LOCK_PATH);
+      } catch {
+        /* someone else reclaimed */
+      }
+      return acquireColdStartLock(true, deps);
+    }
     // Foreign pids must look like serve SPECIFICALLY — a loose pattern
     // (node, or any .papercusp path mention) false-positives on whatever
     // unrelated process reused the pid, e.g. a `cat
@@ -715,6 +737,7 @@ export function releaseColdStartLock(): void {
   } catch {
     /* already gone */
   }
+  coldStartLockHeldHere = false;
 }
 
 /** Default migrations dir: repo `libs/papercusp/libs/db/sql` relative to this file. */
