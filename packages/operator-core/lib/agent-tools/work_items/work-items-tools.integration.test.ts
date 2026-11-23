@@ -1293,8 +1293,10 @@ describe('work_items:create {assign_to} — atomic create+claim envelope (real P
       SELECT admission, admitted_by, taken_by
       FROM harness_shared.work_items
       WHERE feature_id = ${(res.workItem as Record<string, unknown>).id as string}`;
-    expect(row.admission).toBe('pending');
-    expect(row.admitted_by).toBeNull();
+    // A project that sets no duplicate-screening filter holds bugs only
+    // (work-items-duplicate-screening): a feature is admitted at birth, still unclaimed.
+    expect(row.admission).toBe('auto');
+    expect(row.admitted_by).toBe('policy:duplicate-screening-filter');
     expect(row.taken_by).toBeNull();
   });
 });

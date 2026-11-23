@@ -1311,11 +1311,12 @@ async function createOneWorkItemCore(
       };
     }
     // ── ADMISSION GATE (plan work-queue-admission-and-bulk-dedup-2026-08-24, P-002) ──
-    // Born-pending is UNIVERSAL here, not conditional on this filing having found
-    // similar items. Every kind this path can mint is feature|chunk|bug|change|task —
-    // observations have their own writer (work_items:observe) and never reach here — so
-    // "every non-observation filing path lands pending" is, at this choke point, simply
-    // "every item, minus the bypasses below".
+    // An item the PROJECT's duplicate-screening filter selects is born pending, whether or
+    // not this filing found similar items (work-items-duplicate-screening: a project that
+    // sets no filter selects bugs; `{}` selects every kind; "off" selects none). Every kind
+    // this path can mint is feature|chunk|bug|change|task — observations have their own
+    // writer (work_items:observe) and never reach here — so at this choke point a selected
+    // item lands pending "minus the bypasses below".
     //
     // The gate judges DUPLICATION ONLY, never merit (plan charter: redundancy kappa
     // 0.679 vs merit kappa 0.289). Two bypasses, both meaning "already reviewed by
@@ -1350,14 +1351,23 @@ async function createOneWorkItemCore(
             : args.assign_to?.trim()
               ? 'bypass:explicit-assignment'
               : args.admissionBypass ?? null;
-    // The PROJECT's own screening level comes after the filing-time bypasses: a project that
-    // screens only bugs, or nothing, admits the rest at birth (work-items-duplicate-screening).
-    // It is a policy of the project, not something this filer did, so it is recorded under
-    // `policy:` and is not one of ADMISSION_CREATE_BYPASSES, which a refused claimant is shown
-    // as things IT can do. An unreadable or unregistered project screens everything.
+    // The PROJECT's own screening comes after the filing-time bypasses: its filter says which
+    // new items are held, and an item the filter does not select is admitted at birth
+    // (work-items-duplicate-screening; a project that sets no filter holds bugs). It is a
+    // policy of the project, not something this filer did, so it is recorded under `policy:`
+    // and is not one of ADMISSION_CREATE_BYPASSES, which a refused claimant is shown as things
+    // IT can do.
     const screeningExemption = admissionBypass
       ? null
-      : await projectScreeningExemption(workspaceId, harnessForItem ?? ctx.harnessSlug, args.kind);
+      : await projectScreeningExemption(workspaceId, harnessForItem ?? ctx.harnessSlug, {
+          kind: args.kind,
+          severity: args.severity,
+          title: args.title,
+          summary: args.summary,
+          topics: args.topics,
+          planRef: args.externalPlanRef,
+          createdBy: ctx.ownerId,
+        });
     const bornAdmission: 'pending' | 'auto' = admissionBypass || screeningExemption ? 'auto' : 'pending';
     let workItem = await createWorkItem({
       kind: args.kind as WorkItemKind,

@@ -30,12 +30,14 @@ afterEach(() => {
 });
 
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
-// The project registry the duplicate-screening level is read from: one project that screens
-// nothing, one that screens only bugs. Every other project reads as the default, `all`.
+// The project registry the duplicate-screening filter is read from: one project that screens
+// nothing, one whose filter leaves nits out, one whose filter selects every item. Every other
+// project reads as the default, bugs.
 const SCREENING_REGISTRY = vi.hoisted(() => ({
   projects: [
     { slug: 'small', path: '/p/small', configOverrides: { duplicateScreening: 'off' } },
-    { slug: 'bugsonly', path: '/p/bugsonly', configOverrides: { duplicateScreening: 'bugs' } },
+    { slug: 'nonits', path: '/p/nonits', configOverrides: { duplicateScreening: { all: [{ kind: 'bug' }, { not: { severity: 'nit' } }] } } },
+    { slug: 'wide', path: '/p/wide', configOverrides: { duplicateScreening: {} } },
   ],
 }));
 vi.mock('../../harness-registry', async (importOriginal) => ({
@@ -662,23 +664,30 @@ describe('captureImprovement — born admission for captured work', () => {
     expect(d.created[0]).toMatchObject({ admission: 'auto', admittedBy: reason });
   });
 
-  it('admits a captured bug at birth in a project that screens nothing, and holds it where only bugs are screened', async () => {
+  it('admits a captured bug at birth where the project screens nothing or its filter leaves the bug out', async () => {
     const off = deps();
     await captureImprovement({ title: 'bug in a small project', kind: 'bug', scope: 'harness:small' }, off);
     expect(off.created[0]).toMatchObject({ admission: 'auto', admittedBy: 'policy:duplicate-screening-off' });
 
-    const bugs = deps();
-    await captureImprovement({ title: 'bug in a bugs-only project', kind: 'bug', scope: 'harness:bugsonly' }, bugs);
-    expect(bugs.created[0]).toMatchObject({ admission: 'pending' });
-    expect(bugs.created[0].admittedBy).toBeUndefined();
+    const nit = deps();
+    await captureImprovement({ title: 'nit in a no-nits project', kind: 'bug', severity: 'nit', scope: 'harness:nonits' }, nit);
+    expect(nit.created[0]).toMatchObject({ admission: 'auto', admittedBy: 'policy:duplicate-screening-filter' });
+
+    const major = deps();
+    await captureImprovement({ title: 'real bug in a no-nits project', kind: 'bug', severity: 'major', scope: 'harness:nonits' }, major);
+    expect(major.created[0]).toMatchObject({ admission: 'pending' });
+    expect(major.created[0].admittedBy).toBeUndefined();
   });
 
-  it('keeps observations outside admission and non-reviewed change captures pending', async () => {
+  it('keeps observations outside admission, and holds a non-reviewed change capture only where the project\'s filter selects it', async () => {
     const d = deps();
     await captureImprovement({ title: 'sensor observation', kind: 'change', lane: 'observation' }, d);
+    // A project that set no filter screens bugs: a captured change is claimable at once.
     await captureImprovement({ title: 'ordinary change', kind: 'change' }, d);
+    await captureImprovement({ title: 'change in a project that screens everything', kind: 'change', scope: 'harness:wide' }, d);
     expect(d.created[0].admission).toBeUndefined();
-    expect(d.created[1].admission).toBe('pending');
+    expect(d.created[1]).toMatchObject({ admission: 'auto', admittedBy: 'policy:duplicate-screening-filter' });
+    expect(d.created[2].admission).toBe('pending');
   });
 });
 

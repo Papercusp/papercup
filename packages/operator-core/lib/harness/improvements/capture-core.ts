@@ -3886,9 +3886,10 @@ export async function captureImprovement(
     if (evidenceIntegrity) payload.evidenceIntegrity = evidenceIntegrity;
   }
 
-  // Match work_items:create's filing-time bypasses. Every non-observation capture
-  // is born behind admission unless critical, security-related, or explicitly
-  // assigned. Review-required proposals keep their stronger review fence. This
+  // Match work_items:create's filing-time bypasses. A non-observation capture the
+  // project's duplicate-screening filter selects (bugs, unless the project says
+  // otherwise) is born behind admission unless critical, security-related, or
+  // explicitly assigned. Review-required proposals keep their stronger review fence. This
   // makes dedup/freshness evidence visible to the promoter before self-pull,
   // without making a search outage or fuzzy match drop a filing.
   const admissionBypass: AdmissionBypassReason | null =
@@ -3901,16 +3902,20 @@ export async function captureImprovement(
           : input.assignee?.trim()
             ? 'bypass:explicit-assignment'
             : null;
-  // The project's own screening level, after the filing-time bypasses and never for a
+  // The project's own screening filter, after the filing-time bypasses and never for a
   // review-required proposal, which keeps its stronger fence (work-items-duplicate-screening).
   const screeningExemption =
     isObservation || reviewRequired || admissionBypass
       ? null
-      : await projectScreeningExemption(
-          input.workspaceId,
-          harnessFromScope(input.scope),
-          isObservation ? 'change' : storageKindOf(input.kind),
-        );
+      : await projectScreeningExemption(input.workspaceId, harnessFromScope(input.scope), {
+          kind: storageKindOf(input.kind),
+          severity: input.severity,
+          title: input.title,
+          summary: input.body,
+          topics,
+          source: input.source,
+          createdBy: input.createdBy,
+        });
   const createInput: CreateIssueInput = {
     ...(input.artifactId ? { id: input.artifactId } : {}),
     title: input.title,

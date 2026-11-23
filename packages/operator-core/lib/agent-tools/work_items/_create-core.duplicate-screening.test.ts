@@ -1,10 +1,10 @@
 /**
- * _create-core.duplicate-screening.test — the project's own duplicate-screening level decides
+ * _create-core.duplicate-screening.test — the project's own duplicate-screening filter decides
  * whether a newly filed item is held for the scheduled review (work-items-duplicate-screening).
  *
- * `all` (the default, and what an unregistered or unreadable project gets) holds every kind,
- * as before the setting existed. `bugs` holds only bugs. `off` holds nothing. A filing-time
- * bypass still comes first and keeps its own reason.
+ * A project that sets nothing holds bugs and admits the rest. A project's own filter holds
+ * what it selects (`{}` selects everything). `off` holds nothing. A filing-time bypass still
+ * comes first and keeps its own reason.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -64,11 +64,13 @@ vi.mock('../../work-item-holder-identity', async (importOriginal) => {
   return registryBackedHolderIdentity(await importOriginal(), OWNER_REGISTRY);
 });
 
-// The registry the policy reads: one project per level, and `papercusp` with no level set.
+// The registry the policy reads: a project that screens nothing, one whose filter selects
+// every item, one whose filter selects on the outside reference, and `papercusp` with none set.
 const REGISTRY = vi.hoisted(() => ({
   projects: [
     { slug: 'small', path: '/p/small', configOverrides: { duplicateScreening: 'off' } },
-    { slug: 'bugsonly', path: '/p/bugsonly', configOverrides: { duplicateScreening: 'bugs' } },
+    { slug: 'wide', path: '/p/wide', configOverrides: { duplicateScreening: {} } },
+    { slug: 'unplanned', path: '/p/unplanned', configOverrides: { duplicateScreening: { not: { planRef: { exists: true } } } } },
     { slug: 'papercusp', path: '/p/papercusp' },
   ],
 }));
@@ -90,33 +92,41 @@ beforeEach(() => {
   dedupEdgeMocks.persist.mockClear();
 });
 
-describe('createOneWorkItem × the project\'s duplicate-screening level', () => {
-  it('holds a change in a project that set no level, as before the setting existed', async () => {
-    const r = await createOneWorkItem({ kind: 'change', title: 'plain project change', harness: 'papercusp' }, ctxFor('papercusp'));
-    expect(r.ok).toBe(true);
-    expect(born()).toEqual({ admission: 'pending', admittedBy: null });
-  });
-
-  it('admits a change at birth in a project that screens nothing, under the policy\'s name', async () => {
-    const r = await createOneWorkItem({ kind: 'change', title: 'small project change', harness: 'small' }, ctxFor('small'));
-    expect(r.ok).toBe(true);
-    expect(born()).toEqual({ admission: 'auto', admittedBy: 'policy:duplicate-screening-off' });
-  });
-
-  it('admits a bug at birth too when the project screens nothing', async () => {
-    await createOneWorkItem({ kind: 'bug', title: 'small project bug', harness: 'small' }, ctxFor('small'));
-    expect(born()).toEqual({ admission: 'auto', admittedBy: 'policy:duplicate-screening-off' });
-  });
-
-  it('holds the bug and admits the change in a project that screens only bugs', async () => {
-    await createOneWorkItem({ kind: 'bug', title: 'bugs-only project bug', harness: 'bugsonly' }, ctxFor('bugsonly'));
+describe('createOneWorkItem × the project\'s duplicate-screening filter', () => {
+  it('holds a bug and admits a change in a project that set no filter', async () => {
+    await createOneWorkItem({ kind: 'bug', title: 'plain project bug', harness: 'papercusp' }, ctxFor('papercusp'));
     expect(born()).toEqual({ admission: 'pending', admittedBy: null });
     createM.mockClear();
-    await createOneWorkItem({ kind: 'change', title: 'bugs-only project change', harness: 'bugsonly' }, ctxFor('bugsonly'));
-    expect(born()).toEqual({ admission: 'auto', admittedBy: 'policy:duplicate-screening-bugs' });
+    const r = await createOneWorkItem({ kind: 'change', title: 'plain project change', harness: 'papercusp' }, ctxFor('papercusp'));
+    expect(r.ok).toBe(true);
+    expect(born()).toEqual({ admission: 'auto', admittedBy: 'policy:duplicate-screening-filter' });
   });
 
-  it('keeps a filing-time bypass\'s own reason ahead of the project\'s level', async () => {
+  it('holds a change too in a project whose filter selects every item', async () => {
+    await createOneWorkItem({ kind: 'change', title: 'wide project change', harness: 'wide' }, ctxFor('wide'));
+    expect(born()).toEqual({ admission: 'pending', admittedBy: null });
+  });
+
+  it('admits every kind at birth in a project that screens nothing, under the policy\'s name', async () => {
+    await createOneWorkItem({ kind: 'bug', title: 'small project bug', harness: 'small' }, ctxFor('small'));
+    expect(born()).toEqual({ admission: 'auto', admittedBy: 'policy:duplicate-screening-off' });
+    createM.mockClear();
+    await createOneWorkItem({ kind: 'change', title: 'small project change', harness: 'small' }, ctxFor('small'));
+    expect(born()).toEqual({ admission: 'auto', admittedBy: 'policy:duplicate-screening-off' });
+  });
+
+  it('gives the filter the item\'s own facts: one filed under an outside reference is not held', async () => {
+    await createOneWorkItem(
+      { kind: 'bug', title: 'planned fix', harness: 'unplanned', externalPlanRef: 'IDC-412' },
+      ctxFor('unplanned'),
+    );
+    expect(born()).toEqual({ admission: 'auto', admittedBy: 'policy:duplicate-screening-filter' });
+    createM.mockClear();
+    await createOneWorkItem({ kind: 'bug', title: 'stumbled-on bug', harness: 'unplanned' }, ctxFor('unplanned'));
+    expect(born()).toEqual({ admission: 'pending', admittedBy: null });
+  });
+
+  it('keeps a filing-time bypass\'s own reason ahead of the project\'s filter', async () => {
     await createOneWorkItem({ kind: 'bug', title: 'critical in a small project', harness: 'small', severity: 'critical' }, ctxFor('small'));
     expect(born()).toEqual({ admission: 'auto', admittedBy: 'bypass:severity-critical' });
   });
