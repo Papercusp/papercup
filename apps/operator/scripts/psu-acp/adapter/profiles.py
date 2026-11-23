@@ -66,7 +66,7 @@ async def extended(c):
 
     async def held(a):
         control('hold')
-        text=c.caseprompt('lead')
+        text=c.lead=c.caseprompt('lead')
         task=asyncio.create_task(c.prompt(a,text,100))
         for _ in range(200):
             if any(e['sessionId']==c.sid and e['update'].get('title')=='Waiting for registered Papercusp work' for e in c.client.updates):break
@@ -122,6 +122,8 @@ async def extended(c):
             result=await task
             after=json.loads(host.execute('cat','/work/acp-state/'+sid+'.json'))
             assert after['native']!=before['native'] and after['id']==before['id']==sid and c.seen(msg)
+            # The fresh context was told again what the client's turn asked: the carry holds none of it.
+            assert c.seen(c.lead),'the turn\'s prompt was not said again after the carry'
             assert result.usage.total_tokens>=44
             await a.close_session(sid)
         async with c.connection() as a:

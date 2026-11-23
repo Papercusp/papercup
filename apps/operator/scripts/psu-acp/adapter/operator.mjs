@@ -24,9 +24,10 @@ export async function loadConfig(path) {
   }
   if (!Array.isArray(config.models) || !config.models.length
     || config.models.some(m => !m.id || !m.model || !m.name || !Array.isArray(m.efforts)
-      || m.efforts.some(e => !['low','medium','high','xhigh','max'].includes(e)))
+      || m.efforts.some(e => !['low','medium','high','xhigh','max'].includes(e))
+      || (m.window !== undefined && !(Number.isSafeInteger(m.window) && m.window > 0)))
     || new Set(config.models.map(m => m.id)).size !== config.models.length) {
-    throw new Error('Configure distinct model ids with native models and their supported effort values');
+    throw new Error('Configure distinct model ids with native models, their supported effort values and, where given, a context window in tokens');
   }
   if (config.hooks !== undefined && (typeof config.hooks !== 'string' || !isAbsolute(config.hooks))) {
     throw new Error('hooks must be the absolute path of a Papercusp hooks file');
@@ -80,7 +81,13 @@ export class Operator {
     const member=this.member?.spec;
     // Fleet supervision correlates a member's real first turn to its signed launcher
     // and checks the requested model, carry, account and visibility in this ledger.
-    const model = member?.model || this.config.models[0].model;
+    // Papercusp reads a model's context window off its name: `[1m]` is a 1M window, anything else
+    // the small one. A client session's model is named here by its native id, which carries no
+    // such mark, so a session on a 1M model was held to the small window's limit and told to
+    // compact far too early. A config model that says `window` of a million or more is named
+    // with the mark.
+    const first = this.config.models[0];
+    const model = member?.model || (first.window >= 1000000 && !first.model.includes('[1m]') ? first.model+'[1m]' : first.model);
     const modelSpec = member?.effort ? model.replace(/:(low|medium|high|xhigh|max)$/i, '') + ':' + member.effort : model;
     const launchArgv = ['psu-acp'];
     if (member) launchArgv.push('--headless', '--launched-by=' + this.member.owner,

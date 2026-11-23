@@ -212,12 +212,16 @@ export class ManagedAgent {
       if (gauge !== this.gauge || !state.context?.line || rank <= gauge.rank) return;
       gauge.rank = rank;
       const turn = this.turn;
+      // Where hooks run, the line is enrolled like a client's prompt: it is the system's, and a
+      // session's provenance hook would otherwise take it for the owner's own words.
+      const envelope = this.config.hooks ? await this.operator.turnOrigin(record,state.context.line).catch(() => null) : null;
+      const line = envelope ? envelope+'\n'+state.context.line : state.context.line;
       if (turn?.nativeBusy && !turn.cancel && this.nativeLive) {
-        const reply = await this.inner.steer({sessionId:record.native, prompt:[{type:'text', text:state.context.line}]})
+        const reply = await this.inner.steer({sessionId:record.native, prompt:[{type:'text', text:line}]})
           .catch(() => null);
         if (reply?.outcome === 'injected') return;
       }
-      gauge.line = state.context.line;
+      gauge.line = line;
     }).catch(() => {}).finally(() => { gauge.asking = false; });
   }
 
@@ -299,10 +303,11 @@ export class ManagedAgent {
       const nativePrompt = async blocks => {
         if (turn.cancel) return;
         turn.nativeBusy = true;
-        // A gauge reached while no turn was running goes at the head of this prompt.
-        const lead = this.gauge?.line ? [{type:'text', text:this.gauge.line}] : [];
+        // A gauge reached while no turn was running goes with this prompt, after its own blocks: an
+        // enrolled prompt's envelope has to stay at its head.
+        const tail = this.gauge?.line ? [{type:'text', text:this.gauge.line}] : [];
         if (this.gauge) this.gauge.line = null;
-        try { result = foldTurn(result,await this.inner.prompt({sessionId:record.native,prompt:[...lead,...blocks]})); }
+        try { result = foldTurn(result,await this.inner.prompt({sessionId:record.native,prompt:[...blocks,...tail]})); }
         finally { turn.nativeBusy = false; }
       };
       const continueCarry = async () => {
@@ -325,15 +330,16 @@ export class ManagedAgent {
       const blocks = kickoff ? [{type:'text',text:kickoff},...p.prompt] : p.prompt;
       // With Papercusp's hooks registered, the prompt is enrolled as the client's: a program sent
       // it, not the owner. Unenrolled it still goes, and the hook then says it could not verify it.
-      let envelope = null;
-      if (this.config.hooks) {
-        const text = blocks.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n');
-        if (text) envelope = await this.operator.turnOrigin(record,text).catch(error => {
+      const enrolled = async sending => {
+        if (!this.config.hooks) return sending;
+        const text = sending.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n');
+        const envelope = text ? await this.operator.turnOrigin(record,text).catch(error => {
           console.error('Papercusp prompt enrollment failed:',error.message);
           return null;
-        });
-      }
-      await nativePrompt(envelope ? [{type:'text',text:envelope},...blocks] : blocks);
+        }) : null;
+        return envelope ? [{type:'text',text:envelope},...sending] : sending;
+      };
+      await nativePrompt(await enrolled(blocks));
       if (kickoff && !turn.cancel) {
         record.kickedOff = true;
         await this.operator.save(record);
@@ -348,6 +354,12 @@ export class ManagedAgent {
             record.started=true;
             await this.operator.save(record);
             await continueCarry();
+            // The fresh context holds Papercusp's carry and nothing of what this turn was asked: the
+            // client's prompt went to the context that was just replaced. It is said again, so the
+            // session still knows what its client is waiting for.
+            if (!turn.cancel) await nativePrompt(await enrolled([{type:'text',text:
+              'Your context was carried over to a fresh one during this turn. What follows is what this turn was asked, '+
+              'unchanged. Carry on with it from where the work stands; do not start it over.'},...p.prompt]));
           }
           census = await this.operator.census(record);
           if (turn.memberError) throw turn.memberError;
