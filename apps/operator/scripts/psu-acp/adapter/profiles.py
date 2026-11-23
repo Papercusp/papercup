@@ -258,6 +258,22 @@ async def extended(c):
         return {'resumeIdentity':state['identity'],'invalidIDReported':True,'planRef':boot['planRef'],'limitArg':'--compaction-limit=250000'}
     await c.case('B',identity)
 
+    async def gauge():
+        # A session here runs no hook, so the front asks the operator for the context gauge and
+        # puts it in front of the session: here into the turn in flight, at its limit.
+        async with c.connection() as a:
+            await c.opened(a,psuAcp={'compactionLimit':15})
+            result=await c.prompt(a,c.caseprompt('gauge'),60)
+            said=''.join(e['update']['content'].get('text','') for e in c.client.updates
+                if e['sessionId']==c.sid and e['update'].get('sessionUpdate')=='agent_message_chunk')
+            rows=[json.loads(l) for l in host.execute('cat','/work/operator-events.jsonl').splitlines()]
+            asked=[r for r in rows if r.get('route')=='gauge' and r.get('limit')==15]
+            assert asked and asked[-1]['band']=='critical',asked[-3:]
+            assert 'Gauge shown: context: ' in said and 'fixture gauge critical' in said,said[-300:]
+            await a.close_session(c.sid)
+            return {'asked':asked[-1],'said':said[-160:],'stop':result.stop_reason}
+    await c.case('G',gauge)
+
     async def nested():
         async with c.connection() as a:
             await c.opened(a)

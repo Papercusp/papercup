@@ -126,9 +126,11 @@ export class Operator {
     return this.post('/heartbeat', {ownerId: record.owner, pid: process.pid, host: hostname()}, 3000);
   }
 
-  async census(record, ack = []) {
+  // `context` is the session's context size as its native session last reported it; the
+  // operator answers with the gauge to put in front of the session (`state.context`).
+  async census(record, ack = [], context) {
     const state = await this.post('/acp-census', {adv:record.adv, native:record.native, owner:record.owner,
-      workspace:record.workspace, ack}, 5000);
+      workspace:record.workspace, ack, ...(context === undefined ? {} : {context})}, 5000);
     if (!Array.isArray(state.wakes) || typeof state.waiting !== 'boolean') throw new Error('Papercusp returned an incomplete wake census');
     return state;
   }

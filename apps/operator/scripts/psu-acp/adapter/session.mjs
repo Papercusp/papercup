@@ -71,7 +71,7 @@ export class ManagedAgent {
       return response;
     };
     this.inner = new ClaudeAcpAgent({
-      sessionUpdate: p => client.sessionUpdate(publicParams(p)),
+      sessionUpdate: p => { this.noteContext(p); return client.sessionUpdate(publicParams(p)); },
       requestPermission: (p, signal) => ask('session/request_permission',p,signal),
       createElicitation: (p, signal) => ask('elicitation/create',p,signal),
       completeElicitation: p => client.notify('elicitation/complete',p),
@@ -190,8 +190,36 @@ export class ManagedAgent {
     return {configOptions:selectedOptions(this)};
   }
 
+  // A session here runs no hook, so nothing else tells it how full its context is. Each time
+  // its native session reports the figure, the operator is asked for the gauge it would show
+  // (its thresholds and its words), and a gauge that has reached a louder band is put in front
+  // of the session: into the turn in flight, or at the head of its next prompt.
+  noteContext(p) {
+    const used = p?.update?.sessionUpdate === 'usage_update' ? p.update.used : undefined;
+    const record = this.record;
+    if (!Number.isSafeInteger(used) || !record || record.native !== p.sessionId) return;
+    const gauge = this.gauge;
+    if (!gauge || gauge.asking || used === gauge.asked) return;
+    gauge.asking = true;
+    gauge.asked = used;
+    this.operator.census(record, [], used).then(async state => {
+      const rank = {loud:1, critical:2}[state.context?.band] || 0;
+      if (gauge !== this.gauge || !state.context?.line || rank <= gauge.rank) return;
+      gauge.rank = rank;
+      const turn = this.turn;
+      if (turn?.nativeBusy && !turn.cancel && this.nativeLive) {
+        const reply = await this.inner.steer({sessionId:record.native, prompt:[{type:'text', text:state.context.line}]})
+          .catch(() => null);
+        if (reply?.outcome === 'injected') return;
+      }
+      gauge.line = state.context.line;
+    }).catch(() => {}).finally(() => { gauge.asking = false; });
+  }
+
   async startNative(record) {
     const p = this.params;
+    // A fresh native context starts its gauge over.
+    this.gauge = {asked:-1, rank:0, line:null, asking:false};
     const clientOptions = p._meta?.claudeCode?.options || {};
     const model = this.config.models.find(m => m.id === this.model);
     const env = {...clientOptions.env};
@@ -263,7 +291,10 @@ export class ManagedAgent {
       const nativePrompt = async blocks => {
         if (turn.cancel) return;
         turn.nativeBusy = true;
-        try { result = foldTurn(result,await this.inner.prompt({sessionId:record.native,prompt:blocks})); }
+        // A gauge reached while no turn was running goes at the head of this prompt.
+        const lead = this.gauge?.line ? [{type:'text', text:this.gauge.line}] : [];
+        if (this.gauge) this.gauge.line = null;
+        try { result = foldTurn(result,await this.inner.prompt({sessionId:record.native,prompt:[...lead,...blocks]})); }
         finally { turn.nativeBusy = false; }
       };
       const continueCarry = async () => {

@@ -27,6 +27,8 @@ The package contains `client.json` with one `agent_servers` entry. Set its comma
 
 A client may set `_meta.psuAcp` on `session/new`. `role` and `stack` choose the session's identity in place of the configured defaults. `planRef` names the outside plan item the session works on: an opaque string the operator binds to the session, so no Papercusp plan is written for that work. `compactionLimit` is the session's context limit in tokens, a positive integer the operator clamps to what the role allows. Both last for the session, across resume. A fleet member takes them from its launch, never from the client, and opens in the folder its launch names (`members[].cwd` on `fleet:launch-on-plan`), else in the leader's.
 
+No Papercusp hook runs in a session opened here, so the command itself keeps the session told how full its context is. Each time the native session reports its context size the command asks the operator for the gauge it shows every other session, and a gauge that has reached a louder band (80%, then 90% of the session's limit) is put in front of the session: into the turn in flight, or at the head of its next prompt. A carry the session then asks for with `session:request-compaction` is carried out and continued inside the client's prompt.
+
 ## Compatibility and verification
 
 The paired client is Python `agent-client-protocol==0.12.1` in unstable mode. The pinned reference is `@agentclientprotocol/claude-agent-acp@0.88.0`, SDK `0.3.293`, native Claude `2.1.293`. No Papercusp hook is installed by the command. The optional managed test hook records Bash and Agent PreToolUse when the fixture trace variable is set. Removing it removes this recording. Client permission, tool and cancellation handling use structured native messages.

@@ -8,6 +8,7 @@ writeFileSync(persona,'You are the local Papercusp test engineer. Use the tools 
 const prefix = '/api/agent-mcp/console/bootstrap-su';
 let serial = 0;
 const live = new Map();
+const limits = new Map();
 const queued=new Map();
 const waiting=new Set();
 const put=(owner,text)=>queued.set(owner,[...(queued.get(owner)||[]),{id:++serial,text}]);
@@ -47,6 +48,8 @@ createServer(async (req,res) => {
       if (p.su_role?.includes('unresolved') || p.stack?.some(s=>s.includes('unresolved'))) return send(400,{error:'Unresolved identity '+[p.su_role,...(p.stack||[])].join(' ')});
       const adv=++serial;
       live.set(adv,true);
+      const asked=(p.launch_argv||[]).map(a=>/^--compaction-limit=(\d+)$/.exec(a)).find(Boolean);
+      if (asked) limits.set(adv,Number(asked[1]));
       if (p.launch_context?.startsWith('PSU-CASE holdmember ')) waiting.add(p.owner_id);
       return send(200,{status:'ok', agent:'claude', sessionId:adv,nativeSessionId:randomUUID(),workspaceId:p.workspace,
         harnessSlug:p.harness_slug,cwd:p.cwd,promptFile:persona,kickoffPrompt:p.launch_context,
@@ -56,7 +59,15 @@ createServer(async (req,res) => {
     if (req.url === prefix+'/acp-census') {
       const wakes=(queued.get(p.owner)||[]).filter(w=>!p.ack.includes(w.id));
       queued.set(p.owner,wakes);
-      return send(200,{ok:true,waiting:waiting.has(p.owner),wakes});
+      // The stand-in's gauge: the operator's bands (80%, 90%), its own words.
+      const limit=limits.get(p.adv);
+      let context;
+      if (typeof p.context==='number' && limit) {
+        const pct=Math.round(p.context/limit*100), band=pct>=90?'critical':pct>=80?'loud':null;
+        context={limit,band,line:band?'context: '+p.context+'/'+limit+' ('+pct+'%) fixture gauge '+band:null};
+        appendFileSync('/work/operator-events.jsonl',JSON.stringify({route:'gauge',adv:p.adv,context:p.context,limit,band})+'\n');
+      }
+      return send(200,{ok:true,waiting:waiting.has(p.owner),wakes,...(context?{context}:{})});
     }
     if (req.url === prefix+'/session-resume-released') live.set(p.advSessionId,false);
     if (req.url === prefix+'/session-resumed') {

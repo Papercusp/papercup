@@ -1419,7 +1419,7 @@ const searchTranscripts = defineTool({
 /** Current owner budget is authoritative on resume; launch argv is only the
  * fallback when no runtime budget exists. Reuse the seeded model/role policy
  * for legacy launches without an explicit flag instead of the native window. */
-async function compactionLimitForResumeRow(
+export async function compactionLimitForResumeRow(
   session: { coordOwnerId?: string | null; launchArgv?: unknown },
   model?: string | null,
   presenceOverride?: (Pick<PresenceRecord, 'compactionLimit'> & { fleetRole: string | null }) | null,

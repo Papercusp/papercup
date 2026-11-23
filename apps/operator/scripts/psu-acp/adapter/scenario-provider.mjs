@@ -129,9 +129,17 @@ export function nextBlock(input) {
     const result=messages.flatMap(m=>Array.isArray(m.content)?m.content:[]).find(b=>b.type==='tool_result' && b.tool_use_id===id);
     return text(JSON.stringify(result?.content).includes('Indigo')?'Form answer: Indigo':'Form answer missing');
   }
+  if (finished && scenario==='gauge') {
+    const shown=users.find(t=>t.includes('fixture gauge'));
+    return text((shown ? 'Gauge shown: '+shown : 'Gauge not shown')+'\n/work/result.txt');
+  }
   if (finished) return text('Finished '+scenario+' '+nonce+'\n/work/result.txt');
   if (scenario==='form') return tool('AskUserQuestion',{questions:[{header:'Receipt',question:'Which fixture value should I record?',
     multiSelect:false,options:[{label:'Indigo',description:'First test value'},{label:'Green',description:'Second test value'}]}]});
+  if (scenario==='gauge') {
+    // The reply after the wait says whether the gauge was put in front of the session meanwhile.
+    return tool('Bash',{command:'sleep 8',description:'Wait while the context gauge is delivered'});
+  }
   if (scenario==='memberallow' || scenario==='memberreject') return tool('Write',{
     file_path:'/work/'+scenario+'-'+nonce,content:'member receipt '+nonce+'\n'});
   if (scenario === 'long' || scenario === 'cancel' || scenario === 'steer' || scenario==='terminate') {
