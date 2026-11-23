@@ -225,10 +225,6 @@ vi.mock('../presence-fleet', () => ({
 // time. Mocked here so the WIRING is asserted without a PG round-trip — the
 // derivation itself is covered by based-on.test.ts + based-on.integration.test.ts.
 vi.mock('../based-on', () => ({ BASED_ON_MAX_ENTRIES: 8, deriveBasedOn: vi.fn(async () => []) }));
-// WI-6554700010029331: the repeat-report rail's DB reads (real-PG coverage lives in
-// repeat-report-reads.integration.test.ts). Unset = the rail reads nothing and passes.
-const repeatReportReads = vi.hoisted(() => ({ evaluate: vi.fn() }));
-vi.mock('../repeat-report-reads', () => ({ evaluateRepeatReport: repeatReportReads.evaluate }));
 // `withBoundedTimeout` records each result through this sink; its unit tests
 // cover persistence. Keep this handler suite from flushing those observations
 // to real Postgres while exercising its many bounded enrichments.
@@ -1772,38 +1768,15 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(wakeM).not.toHaveBeenCalled();
   });
 
-  // WI-6554700010029331: repeat_report_no_delta — a directed re-send of an item the
-  // sender already reported to the same recipients, with no change since, is refused
-  // BEFORE persistence; a pass stamps the cited item states for the next send's baseline.
-  it('WI-6554700010029331: a no-delta repeat report is refused, nothing persisted, both doors named', async () => {
-    repeatReportReads.evaluate.mockResolvedValueOnce({
-      kind: 'refuse',
-      stamps: [{ ref: 'WI-100', token: 'blocked|bee-1|1|1||1|b1' }],
-      repeats: [{ ref: 'WI-100', priorMsgId: 'msg-prior-1', priorTs: '2026-10-26T17:00:00.000Z', status: 'blocked', holder: 'bee-1' }],
-    });
-    const b = await body({ to: ['peer'], summary: 'Still blocked on WI-100', expects: 'none' });
-    expect(b.results[0]).toMatchObject({ ok: false, error: 'repeat_report_no_delta' });
-    const message = (b.results[0] as { message?: string }).message ?? '';
-    expect(message).toContain("related_msg_id:'msg-prior-1'");
-    expect(message).toContain('work_items:set_blocker');
-    expect(sendM).not.toHaveBeenCalled();
-    expect(repeatReportReads.evaluate).toHaveBeenCalledWith(
-      expect.objectContaining({ refs: ['WI-100'], judge: true }),
-    );
-  });
-
-  it('WI-6554700010029331: a passing send carries the citedItemStates stamp; broadcasts and ref-free sends skip the rail', async () => {
-    const stamps = [{ ref: 'WI-100', token: 'open|||||1|b0' }];
-    repeatReportReads.evaluate.mockResolvedValueOnce({ kind: 'pass', stamps });
-    await body({ to: ['peer'], summary: 'WI-100 is unblocked now', expects: 'none' });
-    expect(sendM).toHaveBeenCalledTimes(1);
-    const sent = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
-    expect(sent.extra?.citedItemStates).toEqual(stamps);
-
-    repeatReportReads.evaluate.mockClear();
-    await body({ to: ['*'], summary: 'FYI WI-100 is unblocked', expects: 'none' });
-    await body({ to: ['peer'], summary: 'no work item cited here', expects: 'none' });
-    expect(repeatReportReads.evaluate).not.toHaveBeenCalled();
+  // A message that names a work item the sender already reported to the same reader is sent like
+  // any other. Refusing it (the removed `repeat_report_no_delta` rail) dropped a message whose
+  // NEWS was not on the item: "the story this item belongs to has landed" names the same item as
+  // "the story is ready", and the reader was never told.
+  it('sends a second message that names a work item already reported to the same reader', async () => {
+    await body({ to: ['peer'], summary: 'WI-100 is ready to start', expects: 'none' });
+    const second = await body({ to: ['peer'], summary: 'WI-100: its story has landed', expects: 'none' });
+    expect(second.results[0]).toMatchObject({ ok: true });
+    expect(sendM).toHaveBeenCalledTimes(2);
   });
 
   it('stamps the awaiting and draft-suspension reader results onto the sent envelope', async () => {
