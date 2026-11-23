@@ -97,7 +97,8 @@ export class Members {
     child.stdio[3].end(JSON.stringify(job));
     try {
       await connection.initialize({protocolVersion:1,clientCapabilities:agent.capabilities || {}});
-      const opened=await connection.newSession({...agent.params,cwd:record.cwd});
+      // A member works in the folder its launch names, else in the leader's.
+      const opened=await connection.newSession({...agent.params,cwd:job.spec?.cwd || record.cwd});
       member.id=opened.sessionId;
       check();
       const msg=opened._meta?.psuAcp?.kickoff;

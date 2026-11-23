@@ -37,9 +37,9 @@
  */
 import { spawnAcpMember } from '../../su-session-acp-members';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { totalmem } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { z } from 'zod';
 import { defineTool, SU_ROLES, fuzzyEnumAsync } from '@papercusp/agent-mcp';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
@@ -4547,6 +4547,27 @@ export default defineTool({
       );
     }
 
+    // `members[i].cwd` is the folder that member is opened in. A member opened in a
+    // folder that is missing would fail after its seat was admitted, so check every
+    // one before any terminal can open.
+    const memberCwdFailures: string[] = [];
+    for (let i = 0; i < Math.min(openCount, memberSpecsForPreflight.length); i++) {
+      const ownCwd = memberSpecsForPreflight[i]?.cwd;
+      if (ownCwd === undefined) continue;
+      let isDirectory = false;
+      try {
+        isDirectory = isAbsolute(ownCwd) && statSync(ownCwd).isDirectory();
+      } catch {
+        isDirectory = false;
+      }
+      if (!isDirectory) memberCwdFailures.push(`members[${i}].cwd \`${ownCwd}\``);
+    }
+    if (memberCwdFailures.length) {
+      return refuseUnreadableLaunchContext(
+        `${memberCwdFailures.join(', ')} must each be the absolute path of an existing folder — refusing the launch before spawning.`,
+      );
+    }
+
     // EI-18862608742257943: does the claim spec THIS launch is about to apply actually
     // admit every WI-/EI- id the kickoff brief(s) name? A member kicked off with "your
     // only job is WI-xxxx" that then cannot claim WI-xxxx does the work anyway — unclaimed
@@ -5498,7 +5519,7 @@ export default defineTool({
                             fleetSlug,harness,plan:planSlug ?? undefined,ownerId:memberOwnerId,
                             launchContext:resolvedMemberConfig(i).launchContext ?? memberLaunchContextPathForIndex(i)},
                             admissionContext,() => spawnHeadless({
-                            envelope: { ...governedBase, greetingCmd: memberCommands[i], cwd: base.cwd },
+                            envelope: { ...governedBase, greetingCmd: memberCommands[i], cwd: resolvedMemberConfig(i).cwd ?? base.cwd },
                             label: memberLabel,
                             logDir: headlessLogDir,
                             launchedBy: ownerId,
@@ -5506,7 +5527,7 @@ export default defineTool({
                             coordOwnerId: memberOwnerId,
                           }))
                         : spawnConsole({
-                            envelope: { ...governedBase, greetingCmd: memberCommands[i], cwd: base.cwd },
+                            envelope: { ...governedBase, greetingCmd: memberCommands[i], cwd: resolvedMemberConfig(i).cwd ?? base.cwd },
                             label: memberLabel,
                             writeMcpJson: false,
                             scheme,

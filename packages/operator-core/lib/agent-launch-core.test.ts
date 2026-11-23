@@ -28,6 +28,7 @@ import {
   injectAccountArg,
   injectKickoffAfterResume,
   memberLaunchCommand,
+  memberSpecSchema,
   normalizeLaunchMode,
   nativeSessionIdFromHost,
   probeFreshLaunchSessions,
@@ -918,6 +919,23 @@ describe('foldMemberSpec (P-002: member field wins; unset falls through, never z
 
   it('an unset member agent inherits the fleet agent, never clears it', () => {
     expect(foldMemberSpec(base, { model: 'opus' }).agent).toBe('claude');
+  });
+
+  it("a member's own folder is that member's alone; the others keep the launching session's", () => {
+    expect(foldMemberSpec(base, { cwd: '/work/story-b' }).cwd).toBe('/work/story-b');
+    expect(foldMemberSpec(base, { model: 'opus' }).cwd).toBeUndefined();
+  });
+});
+
+describe("a member's own folder (members[].cwd)", () => {
+  it('is a per-member launch option the strict schema accepts', () => {
+    expect(memberSpecSchema.parse({ cwd: '/work/story-b' })).toEqual({ cwd: '/work/story-b' });
+    expect(memberSpecSchema.safeParse({ cwd: '' }).success).toBe(false);
+  });
+
+  it('is not a psu flag: the launch command is the same with and without it', () => {
+    const opts = { fleetSlug: 'ops', agent: 'claude', harness: 'papercusp', account: 'default' };
+    expect(memberLaunchCommand({ ...opts, cwd: '/work/story-b' })).toBe(memberLaunchCommand(opts));
   });
 });
 

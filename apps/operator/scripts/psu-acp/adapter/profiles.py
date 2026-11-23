@@ -145,12 +145,19 @@ async def extended(c):
             await c.opened(a)
             task=await held(a)
             c.client.member_effects={}
+            # One member is given a folder of its own; the other starts in the leader's.
+            host.execute('mkdir','-p','/work/member-beta')
+            folders={'alpha':None,'beta':'/work/member-beta'}
+            owners={}
             for label,scenario,decision in [('alpha','memberallow','allow_once'),('beta','memberreject','reject_once')]:
                 nonce=uuid4().hex
                 path='/work/'+scenario+'-'+nonce
                 c.client.member_effects[label]=({'file_path':path,'content':'member receipt '+nonce+'\n'},decision)
-                control('member',label=label,spec={'agent':'claude','ownerId':'su-'+str(uuid4()),'fleetSlug':'fixture-fleet',
-                    'launchContext':'PSU-CASE '+scenario+' '+nonce})
+                owners[label]='su-'+str(uuid4())
+                # The launch tool joins the effort onto the model's name; the front must take both forms.
+                control('member',label=label,spec={'agent':'claude','ownerId':owners[label],'fleetSlug':'fixture-fleet',
+                    'model':'sonnet:high' if label=='alpha' else 'sonnet',
+                    'launchContext':'PSU-CASE '+scenario+' '+nonce,**({'cwd':folders[label]} if folders[label] else {})})
             control('wake',text=c.caseprompt('final'))
             result=await task
             rows=result.field_meta['psuAcp']['launched']
@@ -159,8 +166,13 @@ async def extended(c):
                 exists=host.execute('sh','-c','test ! -e "$1" || cat "$1"','check',raw['file_path'])
                 assert exists==(raw['content'].strip() if decision=='allow_once' else ''),(label,exists)
             assert {x.get('label') for x in c.client.permissions}=={'alpha','beta'},c.client.permissions
+            boots=[json.loads(l) for l in host.execute('cat','/work/operator-events.jsonl').splitlines()]
+            opened_in={label:[b['cwd'] for b in boots if b.get('owner')==owner and b.get('cwd')] for label,owner in owners.items()}
+            assert opened_in=={'alpha':['/work'],'beta':['/work/member-beta']},opened_in
+            models={label:[a for b in boots if b.get('owner')==owner for a in (b.get('argv') or []) if a.startswith('--model=')] for label,owner in owners.items()}
+            assert models=={'alpha':['--model=sonnet:high'],'beta':['--model=sonnet']},models
             await a.close_session(c.sid)
-            return {'members':rows,'decisions':c.client.permissions,'leader':result.usage.total_tokens}
+            return {'members':rows,'decisions':c.client.permissions,'leader':result.usage.total_tokens,'openedIn':opened_in}
     await c.case(22,workers)
     async def managed_tools():
         async with c.connection() as a:

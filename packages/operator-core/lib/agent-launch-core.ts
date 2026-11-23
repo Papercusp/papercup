@@ -918,6 +918,13 @@ export interface MemberLaunchOpts {
   compactionLimit?: number;
   brain?: boolean;
   addDir?: string[];
+  /**
+   * The folder this member works in (absolute). Omitted = the launching session's own.
+   * A fleet whose members each build a different checkout of one repository (a git
+   * worktree per member) names each member's here, so no two share an index or a
+   * working tree. Not a psu flag: the launch tool opens the member there.
+   */
+  cwd?: string;
   allowSubagents?: boolean;
   seat?: string;
   extraArgs?: string[];
@@ -962,6 +969,8 @@ export interface MemberSpec {
   claimFilter?: FilterNode;
   headless?: boolean;
   addDir?: string[];
+  /** The folder this member works in (absolute); the launching session's when unset. */
+  cwd?: string;
   allowSubagents?: boolean;
   brain?: boolean;
   feature?: string;
@@ -1031,6 +1040,13 @@ export const memberSpecSchema = z
     claimFilter: filterNodeSchema.optional().describe('Dedicated claim filter (for example plan=id or id=in); intersects the fleet fence before kickoff. Fleet launch only.'),
     headless: z.boolean().optional().describe('Launch this member headless (no window).'),
     addDir: z.array(z.string()).optional().describe("psu --add-dir entries for this member."),
+    cwd: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Absolute path of the existing folder this member works in (for example its own git worktree). Defaults to the launching session's folder. Fleet launch only.",
+      ),
     allowSubagents: z.boolean().optional().describe('psu --allow-subagents for this member.'),
     brain: z.boolean().optional().describe('psu --brain for this member.'),
     feature: z.string().optional().describe('psu --feature for this member.'),
@@ -1084,6 +1100,7 @@ export function foldMemberSpec(
     claimFilter: pick(spec.claimFilter, base.claimFilter),
     headless: pick(spec.headless, base.headless),
     addDir: pick(spec.addDir, base.addDir),
+    cwd: pick(spec.cwd, base.cwd),
     allowSubagents: pick(spec.allowSubagents, base.allowSubagents),
     brain: pick(spec.brain, base.brain),
     feature: pick(spec.feature, base.feature),

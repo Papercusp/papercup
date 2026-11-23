@@ -137,9 +137,12 @@ export class ManagedAgent {
       this.model = record.model || this.config.models[0].id;
       this.effort = record.effort || 'default';
       if (member?.model) {
-        const choice=this.config.models.find(m=>[m.id,m.model].includes(member.model));
+        // The launch tool names a member's model with its effort joined on (`sonnet:medium`).
+        const [,name,suffix]=member.model.match(/^(.*?)(?::(low|medium|high|xhigh|max))?$/i);
+        const choice=this.config.models.find(m=>[m.id,m.model].includes(name));
         if (!choice) throw new Error('Unsupported member model '+member.model);
         this.model=choice.id;
+        if (suffix) this.effort=suffix.toLowerCase();
       }
       if (member?.effort) this.effort=member.effort;
       this.nativeLive = false;
