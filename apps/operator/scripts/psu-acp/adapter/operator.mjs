@@ -28,6 +28,9 @@ export async function loadConfig(path) {
     || new Set(config.models.map(m => m.id)).size !== config.models.length) {
     throw new Error('Configure distinct model ids with native models and their supported effort values');
   }
+  if (config.hooks !== undefined && (typeof config.hooks !== 'string' || !isAbsolute(config.hooks))) {
+    throw new Error('hooks must be the absolute path of a Papercusp hooks file');
+  }
   const root = dirname(resolve(path));
   const {effective}=await resolveSettings({settingSources:[]});
   // Keep operator aliases while allowing clients to match full inference-profile IDs.
@@ -128,6 +131,16 @@ export class Operator {
 
   // `context` is the session's context size as its native session last reported it; the
   // operator answers with the gauge to put in front of the session (`state.context`).
+  // The client's prompt, enrolled with the operator as machine-sent before it reaches the
+  // session: the answer is the envelope that goes at its head. A session's Papercusp hooks
+  // would otherwise take a program's prompt for the owner's own words.
+  async turnOrigin(record, text) {
+    const reply = await this.post('/acp-turn-origin', {adv:record.adv, native:record.native, owner:record.owner,
+      workspace:record.workspace, text}, 5000);
+    if (!reply?.ok || typeof reply.envelope !== 'string') throw new Error('The operator did not enroll the prompt');
+    return reply.envelope;
+  }
+
   async census(record, ack = [], context) {
     const state = await this.post('/acp-census', {adv:record.adv, native:record.native, owner:record.owner,
       workspace:record.workspace, ack, ...(context === undefined ? {} : {context})}, 5000);

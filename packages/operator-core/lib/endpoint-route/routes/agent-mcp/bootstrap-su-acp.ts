@@ -6,6 +6,7 @@ import { readActiveLoopFacts } from '../../../harness/routines/loop';
 import { principalFromSuperuserToken } from '../../../auth/principal/from-superuser-token';
 import { jsonRes } from './bootstrap-su-shared';
 import { contextGaugeBand, contextUsagePct, renderBandedContextGauge } from '../../../agent-tools/coordination/tools/inbox-context-usage';
+import { tagTurnForInjection } from '../../../turn-provenance/turn-provenance';
 
 export const acpCensus = defineTool({
   method:'POST', path:'/agent-mcp/console/bootstrap-su/acp-census', auth:'loopback',
@@ -40,5 +41,29 @@ export const acpCensus = defineTool({
     } catch {
       return jsonRes({error:'ACP wake census is unavailable'},503);
     }
+  }
+});
+
+/**
+ * A prompt the front's client is about to send is enrolled as machine-sent (origin
+ * `acp-client`): the ledger row is written here, by the one implementation every injector
+ * uses, and the front is answered with the envelope to put at the head of the prompt. The
+ * session's provenance hook then stamps the turn VERIFIED AGENT-ORIGIN instead of OWNER
+ * (interactive), so no owner directive is minted for what a program sent.
+ */
+export const acpTurnOrigin = defineTool({
+  method:'POST', path:'/agent-mcp/console/bootstrap-su/acp-turn-origin', auth:'loopback',
+  async handler(req) {
+    if (!await principalFromSuperuserToken(req.headers)) return jsonRes({error:'Local operator credential required'},403);
+    const p = await req.json().catch(() => null);
+    if (!p || !Number.isSafeInteger(p.adv) || typeof p.workspace !== 'string' || typeof p.text !== 'string'
+      || !p.text || p.text.length > 4_000_000) {
+      return jsonRes({error:'Invalid ACP turn-origin request'},400);
+    }
+    const row = await getAdvSessionInWorkspace(p.adv,p.workspace);
+    if (!row || row.retiredAt || row.endedAt || row.launchArgv?.[0] !== 'psu-acp' || row.coordOwnerId !== p.owner
+      || !row.coordOwnerId || !row.sessionId || row.sessionId !== p.native) return jsonRes({error:'ACP session binding changed'},409);
+    const tagged = await tagTurnForInjection({sid:row.coordOwnerId,origin:'acp-client',text:p.text});
+    return jsonRes({ok:true,envelope:tagged.envelope,nonce:tagged.nonce,ledgerWritten:tagged.ledgerWritten});
   }
 });

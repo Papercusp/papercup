@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { ClaudeAcpAgent } from '@agentclientprotocol/claude-agent-acp';
 import { RequestError } from '@agentclientprotocol/sdk';
 import { Members } from './members.mjs';
+import { loadHooks, sdkHooks } from './hooks.mjs';
 
 function identityFor(config, params) {
   const override = params._meta?.psuAcp || {};
@@ -238,6 +239,9 @@ export class ManagedAgent {
     if (this.effort !== 'default') env.CLAUDE_CODE_EFFORT_LEVEL = this.effort;
     const options = {env, model:model.model, allowDangerouslySkipPermissions:false,
       ...(this.effort === 'default' ? {} : {effort:this.effort})};
+    // Papercusp's own hooks, registered as this host's (hooks.mjs), where the config names their file.
+    // Read at each native start, so a reinstall of the hooks reaches the next one.
+    if (this.config.hooks) options.hooks = sdkHooks(await loadHooks(this.config.hooks),() => env);
     for (const key of ['betas','debug','agents','plugins']) if (clientOptions[key] !== undefined) options[key] = clientOptions[key];
     const prompts = [await readFile(record.promptFile,'utf8')];
     // The supervised Claude launcher layers its governed fleet brief as a second
@@ -318,7 +322,18 @@ export class ManagedAgent {
       // A member its client hosts is given its governed kickoff ahead of the client's first prompt,
       // as a member this front starts is prompted with it.
       const kickoff = this.operator.member?.clientHosted && !record.kickedOff ? this.operator.kickoff : null;
-      await nativePrompt(kickoff ? [{type:'text',text:kickoff},...p.prompt] : p.prompt);
+      const blocks = kickoff ? [{type:'text',text:kickoff},...p.prompt] : p.prompt;
+      // With Papercusp's hooks registered, the prompt is enrolled as the client's: a program sent
+      // it, not the owner. Unenrolled it still goes, and the hook then says it could not verify it.
+      let envelope = null;
+      if (this.config.hooks) {
+        const text = blocks.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n');
+        if (text) envelope = await this.operator.turnOrigin(record,text).catch(error => {
+          console.error('Papercusp prompt enrollment failed:',error.message);
+          return null;
+        });
+      }
+      await nativePrompt(envelope ? [{type:'text',text:envelope},...blocks] : blocks);
       if (kickoff && !turn.cancel) {
         record.kickedOff = true;
         await this.operator.save(record);

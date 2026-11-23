@@ -320,6 +320,37 @@ async def extended(c):
             return {'handedTo':'client','memberOwner':owner,'kickoffFirst':True,'memberTokens':tokens,'leaderLaunched':[]}
     await c.case('H',hosted)
 
+    async def hooks():
+        # Under managed settings that admit only managed hooks, the front registers Papercusp's
+        # installed command hooks as the session host's own: a hook's context reaches the session,
+        # a hook that exits 2 refuses the call, and the client's prompt is enrolled as machine-sent.
+        host.execute('mkdir','-p','/work/hooks/plugin/hooks')
+        table={'hooks':{
+            'UserPromptSubmit':[{'hooks':[{'type':'command','command':"cat >/dev/null; printf 'fixture hook context for %s' \"$PAPERCUSP_SID\""},
+                {'type':'command','command':"cat >/dev/null; echo UserPromptSubmit >> /work/hook-events.txt"}]}],
+            'PreToolUse':[{'matcher':'Bash','hooks':[{'type':'command','timeout':10,
+                'command':"if grep -q fixture-refused; then echo 'fixture hook refused this call' >&2; exit 2; fi"}]}],
+            'Stop':[{'hooks':[{'type':'command','command':"cat >/dev/null; echo Stop >> /work/hook-events.txt"}]}]}}
+        host.write('/work/hooks/plugin/hooks/hooks.json',json.dumps(table))
+        cfg=json.loads(host.execute('cat','/work/acp.json'))
+        cfg['hooks']='/work/hooks/plugin/hooks/hooks.json'
+        host.write('/work/acp-hooks.json',json.dumps(cfg))
+        host.execute('sh','-c',': > /work/hook-events.txt')
+        async with c.connection(config='/work/acp-hooks.json') as a:
+            await c.opened(a)
+            result=await c.prompt(a,c.caseprompt('hooks'),60)
+            said=''.join(e['update']['content'].get('text','') for e in c.client.updates
+                if e['sessionId']==c.sid and e['update'].get('sessionUpdate')=='agent_message_chunk')
+            assert 'Hook context: shown; enrolled: yes; refused: yes' in said,said[-300:]
+            fired=host.execute('cat','/work/hook-events.txt').split()
+            assert 'UserPromptSubmit' in fired and 'Stop' in fired,fired
+            rows=[json.loads(l) for l in host.execute('cat','/work/operator-events.jsonl').splitlines()]
+            enrolled=[r for r in rows if r.get('route')=='turn-origin']
+            assert enrolled and enrolled[-1]['chars']>0,enrolled[-2:]
+            await a.close_session(c.sid)
+            return {'said':said[-90:],'fired':sorted(set(fired)),'enrolled':len(enrolled),'stop':result.stop_reason}
+    await c.case('K',hooks)
+
     async def nested():
         async with c.connection() as a:
             await c.opened(a)

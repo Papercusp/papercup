@@ -6,7 +6,7 @@ mkdir -p "$out"
 build_dir=$(mktemp -d)
 trap 'rm -rf "$build_dir"' EXIT
 cd "$root"
-cp package.json package-lock.json psu-acp adapter.mjs session.mjs operator.mjs members.mjs supervise.c client.json config.example.json "$build_dir/"
+cp package.json package-lock.json psu-acp adapter.mjs session.mjs operator.mjs members.mjs hooks.mjs supervise.c client.json config.example.json "$build_dir/"
 if test -f README.md; then cp README.md "$build_dir/"; fi
 cd "$build_dir"
 cc -static -O2 -Wall -Wextra -Werror -o supervise supervise.c

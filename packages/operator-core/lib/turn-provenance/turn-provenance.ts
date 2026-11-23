@@ -124,6 +124,11 @@ export const TURN_ORIGIN_BASES = [
   // instead of the global ledger TTL (a wake can fire up to 3600s later,
   // far past the 10-minute default).
   'cli-schedule-wakeup',
+  // A prompt the session's ACP client sent (psu-acp). The client is a program that drives the
+  // session, not the owner at a keyboard, so its prompts must not classify OWNER (interactive):
+  // that minted an owner directive for every prompt the driving system sent. The front enrolls
+  // each one through the acp-turn-origin route before it reaches the session.
+  'acp-client',
 ] as const;
 export type TurnOriginBase = (typeof TURN_ORIGIN_BASES)[number];
 export type TurnOrigin = TurnOriginBase | `coord-inject:${string}`;

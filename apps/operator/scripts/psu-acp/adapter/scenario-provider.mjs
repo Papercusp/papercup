@@ -129,6 +129,15 @@ export function nextBlock(input) {
     const result=messages.flatMap(m=>Array.isArray(m.content)?m.content:[]).find(b=>b.type==='tool_result' && b.tool_use_id===id);
     return text(JSON.stringify(result?.content).includes('Indigo')?'Form answer: Indigo':'Form answer missing');
   }
+  if (scenario==='hooks') {
+    // What the host's hooks and the client's enrollment put in front of the session.
+    const context=users.some(t=>t.includes('fixture hook context'));
+    const enrolled=users.some(t=>/^\s*\u27e6turn-origin:acp-client nonce:[a-f0-9]{8,64}\u27e7/.test(t));
+    if (!finished) return tool('Bash',{command:'echo fixture-refused',description:'A call the fixture hook refuses'});
+    const result=messages.flatMap(m=>Array.isArray(m.content)?m.content:[]).find(b=>b.type==='tool_result' && b.tool_use_id===id);
+    const refused=JSON.stringify(result?.content ?? '').includes('fixture hook refused this call');
+    return text('Hook context: '+(context?'shown':'missing')+'; enrolled: '+(enrolled?'yes':'no')+'; refused: '+(refused?'yes':'no')+'\n/work/result.txt');
+  }
   if (finished && scenario==='gauge') {
     const shown=users.find(t=>t.includes('fixture gauge'));
     return text((shown ? 'Gauge shown: '+shown : 'Gauge not shown')+'\n/work/result.txt');

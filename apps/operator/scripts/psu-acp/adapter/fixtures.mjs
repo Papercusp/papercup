@@ -56,6 +56,12 @@ createServer(async (req,res) => {
         envelopeEnv:{PAPERCUSP_SID:p.owner_id || 'su-'+randomUUID()}});
     }
     if (req.url === prefix+'/session-ended') live.set(p.advSessionId,false);
+    if (req.url === prefix+'/acp-turn-origin') {
+      // The stand-in enrolls the client's prompt as the operator does, and says so.
+      const nonce=createHash('sha256').update(String(p.text)).digest('hex').slice(0,16);
+      appendFileSync('/work/operator-events.jsonl',JSON.stringify({route:'turn-origin',adv:p.adv,owner:p.owner,chars:String(p.text).length})+'\n');
+      return send(200,{ok:true,envelope:'\u27e6turn-origin:acp-client nonce:'+nonce+'\u27e7',nonce,ledgerWritten:true});
+    }
     if (req.url === prefix+'/acp-census') {
       const wakes=(queued.get(p.owner)||[]).filter(w=>!p.ack.includes(w.id));
       queued.set(p.owner,wakes);

@@ -116,6 +116,7 @@ describe('envelope format + parse', () => {
     expect(isTurnOrigin('session-port')).toBe(true);
     expect(isTurnOrigin('role-prompt')).toBe(true);
     expect(isTurnOrigin('resume-smoke')).toBe(true);
+    expect(isTurnOrigin('acp-client')).toBe(true);
     expect(isTurnOrigin('coord-inject:su-abc')).toBe(true);
     expect(isTurnOrigin('coord-inject:')).toBe(false);
     expect(isTurnOrigin('owner')).toBe(false);
@@ -722,6 +723,19 @@ describe('ledger write/read/GC', () => {
 });
 
 describe('tagTurnForInjection (the injector one-call API)', () => {
+  it("a prompt an ACP client sent classifies as the client's, never the owner's", async () => {
+    // What the ACP front sends natively: the envelope as its own leading block, then the prompt.
+    const text = 'Build the story in this folder and reply with the result file.';
+    const tagged = await tagTurnForInjection({ sid: SID, origin: 'acp-client', text, dir, nowMs: NOW });
+    const rows = readLedgerRows(SID, { dir, nowMs: NOW + 1 });
+
+    const sent = classify(`${tagged.envelope}\n${text}`, rows, { nowMs: NOW + 1 });
+    expect(sent.verdict).toBe('verified-agent');
+    expect(sent.origin).toBe('acp-client');
+    // The same words with nothing enrolled are the owner's: the enrollment is what tells them apart.
+    expect(classify(text, [], { nowMs: NOW + 1 }).verdict).toBe('owner-interactive');
+  });
+
   it('records the enrolling process on each exact nonce, including distinct runs of the same host', async () => {
     const firstIssuer = { host: 'port-3170', processId: 'linux:boot:100', buildSha: 'abc123' };
     const nextIssuer = { host: 'port-3170', processId: 'linux:boot:200', buildSha: 'def456' };

@@ -106,7 +106,7 @@ class Cases:
         self.sequence=0
 
     @asynccontextmanager
-    async def connection(self, *, dead=False, extra=()):
+    async def connection(self, *, dead=False, extra=(), config=None):
         self.sequence+=1
         token=str(self.sequence)
         self.wire='/work/wire-'+token
@@ -114,7 +114,7 @@ class Cases:
             native='/oracle/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js'
             cmd=['node',native]
         else:
-            cmd=['/opt/adapter/node_modules/.bin/psu-acp','--config','/work/dead.json' if dead else '/work/acp.json',*extra]
+            cmd=['/opt/adapter/node_modules/.bin/psu-acp','--config',config or ('/work/dead.json' if dead else '/work/acp.json'),*extra]
         # Record only synthetic fixture traffic, inside the disposable container.
         command=self.host.docker+['exec','-i',self.host.cid,'sh','-c',
             'path=$1; shift; tee "$path.in" | (sh -c \'path=$1; shift; echo $$ > "$path.pid"; exec "$@"\' exec "$path" "$@"; echo $? > "$path.exit") | tee "$path.out"', 'wire',self.wire,*cmd]
