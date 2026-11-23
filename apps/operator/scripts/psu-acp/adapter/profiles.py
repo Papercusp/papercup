@@ -274,6 +274,52 @@ async def extended(c):
             return {'asked':asked[-1],'said':said[-160:],'stop':result.stop_reason}
     await c.case('G',gauge)
 
+    async def hosted():
+        # A client that hosts its session's members is handed each launch job and starts the member
+        # itself from it. The member is a session of the client's own: nothing of it runs inside the
+        # leader's turn, and its kickoff goes ahead of the client's first prompt.
+        c.client.host_jobs=[]
+        kickoff='PSU-CASE sequence '+uuid4().hex
+        owner='su-'+str(uuid4())
+        async with c.connection() as a:
+            opened=await c.opened(a,psuAcp={'hostMembers':True})
+            leader=c.sid
+            assert opened.field_meta['psuAcp']['owner'].startswith('su-'),opened.field_meta
+            task=await held(a)
+            # The client answers the front's request while the launch is still being posted.
+            await asyncio.to_thread(control,'member',label='hosted-worker',
+                spec={'agent':'claude','ownerId':owner,'fleetSlug':'fixture-fleet','launchContext':kickoff})
+            assert len(c.client.host_jobs)==1,c.client.host_jobs
+            handed=c.client.host_jobs[0]
+            job=handed['job']
+            assert handed['sessionId']==leader and job['label']=='hosted-worker' and job['spec']['ownerId']==owner,handed
+            host.execute('sh','-c','printf %s "$1" > /work/hosted-job.json','sh',json.dumps(job))
+            async with c.connection(extra=('--member-job','/work/hosted-job.json')) as m:
+                started=await asyncio.wait_for(m.new_session('/work',mcp_servers=[c.server()]),35)
+                member=started.session_id
+                assert started.field_meta['psuAcp']=={'owner':owner,'kickoff':kickoff},started.field_meta
+                first='PSU-CASE identity '+uuid4().hex
+                c.sid=member
+                reply=await c.prompt(m,first)
+                rows=[json.loads(l) for l in host.execute('cat','/work/scenarios.jsonl').splitlines()]
+                digest=lambda text: __import__('hashlib').sha256(text.encode()).hexdigest()
+                order=rows[-1]['seen']
+                assert order.index(digest(kickoff))<order.index(digest(first)),order
+                again='PSU-CASE identity '+uuid4().hex
+                await c.prompt(m,again)
+                rows=[json.loads(l) for l in host.execute('cat','/work/scenarios.jsonl').splitlines()]
+                assert rows[-1]['seen'].count(digest(kickoff))==1,rows[-1]['seen']
+                tokens=reply.usage.total_tokens
+                await m.close_session(member)
+            c.sid=leader
+            control('wake',text=c.caseprompt('workerfinished'))
+            result=await task
+            # Nothing of the member came back through the leader's turn.
+            assert result.field_meta['psuAcp']['launched']==[],result.field_meta
+            await a.close_session(leader)
+            return {'handedTo':'client','memberOwner':owner,'kickoffFirst':True,'memberTokens':tokens,'leaderLaunched':[]}
+    await c.case('H',hosted)
+
     async def nested():
         async with c.connection() as a:
             await c.opened(a)

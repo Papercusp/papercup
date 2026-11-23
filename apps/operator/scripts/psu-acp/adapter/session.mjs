@@ -130,6 +130,8 @@ export class ManagedAgent {
       }
       this.record = record;
       this.params = p;
+      // A client that hosts this session's members is handed each launch job (members.mjs).
+      this.clientHostsMembers = !member && p._meta?.psuAcp?.hostMembers === true;
       const suppliedHome=p._meta?.claudeCode?.options?.env?.CLAUDE_CONFIG_DIR;
       if (resume && suppliedHome && record.claudeHome && suppliedHome!==record.claudeHome) throw new Error('Transcript home differs from the registered session');
       record.claudeHome=suppliedHome || record.claudeHome || this.hostClaudeHome;
@@ -154,8 +156,10 @@ export class ManagedAgent {
         if (reply.sessionTerminal && this.record === record) this.onFatal();
       }).catch(() => {}), 15000);
       this.heartbeat.unref();
+      // The client is told the session's Papercusp owner id, which is how anything outside the
+      // session addresses it (a message to a fleet's leader, say).
       return {sessionId:record.id, configOptions:selectedOptions(this),
-        ...(member ? {_meta:{psuAcp:{kickoff:this.operator.kickoff}}} : {})};
+        _meta:{psuAcp:{owner:record.owner, ...(member ? {kickoff:this.operator.kickoff} : {})}}};
     } catch (error) {
       if (this.record) await this.closeSession({sessionId:this.record.id}).catch(() => {});
       throw error;
@@ -311,7 +315,14 @@ export class ManagedAgent {
         await nativePrompt([{type:'text',text:wake.text}]);
         if (!turn.cancel) await this.operator.census(record,[wake.id]);
       }
-      await nativePrompt(p.prompt);
+      // A member its client hosts is given its governed kickoff ahead of the client's first prompt,
+      // as a member this front starts is prompted with it.
+      const kickoff = this.operator.member?.clientHosted && !record.kickedOff ? this.operator.kickoff : null;
+      await nativePrompt(kickoff ? [{type:'text',text:kickoff},...p.prompt] : p.prompt);
+      if (kickoff && !turn.cancel) {
+        record.kickedOff = true;
+        await this.operator.save(record);
+      }
       let hold;
       try {
         while (!turn.cancel) {

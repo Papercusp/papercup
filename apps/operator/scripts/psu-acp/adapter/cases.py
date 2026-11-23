@@ -28,6 +28,7 @@ class Client(Observations):
         self.received=[]
         self.changed=asyncio.Event()
         self.mode=None
+        self.host_jobs=[]
 
     async def session_update(self, session_id, update, **kwargs):
         await super().session_update(session_id,update,**kwargs)
@@ -40,6 +41,13 @@ class Client(Observations):
         assert session_id==self.active_session
         self.form_session=session_id
         return schema.AcceptElicitationResponse.model_validate({'action':'accept','content':{'question_0':'Indigo'}})
+
+    async def ext_method(self,method,params):
+        # A client that hosts its session's members is handed each launch job.
+        if method=='psu/host_member':
+            self.host_jobs.append(params)
+            return {'accepted':True}
+        return {}
 
     async def request_permission(self,session_id,tool_call,options,**kwargs):
         raw=tool_call.raw_input or {}
@@ -98,7 +106,7 @@ class Cases:
         self.sequence=0
 
     @asynccontextmanager
-    async def connection(self, *, dead=False):
+    async def connection(self, *, dead=False, extra=()):
         self.sequence+=1
         token=str(self.sequence)
         self.wire='/work/wire-'+token
@@ -106,7 +114,7 @@ class Cases:
             native='/oracle/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js'
             cmd=['node',native]
         else:
-            cmd=['/opt/adapter/node_modules/.bin/psu-acp','--config','/work/dead.json' if dead else '/work/acp.json']
+            cmd=['/opt/adapter/node_modules/.bin/psu-acp','--config','/work/dead.json' if dead else '/work/acp.json',*extra]
         # Record only synthetic fixture traffic, inside the disposable container.
         command=self.host.docker+['exec','-i',self.host.cid,'sh','-c',
             'path=$1; shift; tee "$path.in" | (sh -c \'path=$1; shift; echo $$ > "$path.pid"; exec "$@"\' exec "$path" "$@"; echo $? > "$path.exit") | tee "$path.out"', 'wire',self.wire,*cmd]

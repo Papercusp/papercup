@@ -11,7 +11,11 @@ if (process.argv[2] === '--version') {
 } else {
   if (process.argv[2] !== '--config' || !process.argv[3]) throw new Error('Usage: psu-acp --config /path/to/config.json');
   const config = await loadConfig(process.argv[3]);
-  const member=process.argv[4]==='--member' ? JSON.parse(readFileSync(3,'utf8')) : null;
+  // `--member`: a member its leader's front started, its launch job on fd 3. `--member-job <file>`:
+  // a member the leader's client hosts, started by that client from the job it was handed.
+  const member=process.argv[4]==='--member' ? JSON.parse(readFileSync(3,'utf8'))
+    : process.argv[4]==='--member-job' && process.argv[5]
+      ? {...JSON.parse(readFileSync(process.argv[5],'utf8')),clientHosted:true} : null;
   if (!process.env.CLAUDE_CODE_EXECUTABLE && config.executable) process.env.CLAUDE_CODE_EXECUTABLE = config.executable;
   await applyManagedPolicyEnv();
   let agent;

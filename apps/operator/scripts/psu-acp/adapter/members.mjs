@@ -54,12 +54,22 @@ export class Members {
         if (req.url==='/carry') {
           if (!job.nonce || !job.text || record.pendingCarry || this.children.size) throw new Error('Carry is unavailable');
           await this.agent.queueCarry(record,job);
-        } else await this.launch(record,job,this.agent.turn);
+        } else if (this.agent.clientHostsMembers) await this.hand(record,job);
+        else await this.launch(record,job,this.agent.turn);
         res.writeHead(201).end();
       } catch (error) { res.writeHead(409).end(error.message); }
     });
     await new Promise((resolve,reject)=>this.server.once('error',reject).listen(this.path,resolve));
     await chmod(this.path,0o600);
+  }
+
+  // The client hosts this session's members (`_meta.psuAcp.hostMembers` when it opened): it is
+  // asked to start the member from its launch job (`psu-acp --member-job <file>`). The member is
+  // then a session of the client's own, with its own transcript, usage and time limit, and
+  // nothing of it runs inside this session's turn.
+  async hand(record,job) {
+    const reply=await this.agent.client.request('_psu/host_member',{sessionId:record.id,job});
+    if (!reply?.accepted) throw new Error(reply?.reason || 'The client did not take the member');
   }
 
   async launch(record,job,turn) {
