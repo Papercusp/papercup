@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7183,10 +7183,16 @@ describe('cd + EXIT-trap/restore path-drift advisory (EI-19409854431997137)', ()
   // never suppresses a case this suite still expects to fire.
   let seq = 0;
   const nextTrapSid = () => `cdtrap-${process.pid}-${++seq}`;
+  // A session in no repository: this suite is about the advisory alone, and a
+  // literal `cp` destination inside a git repository (the checkout the tests run
+  // from, with no cwd given) is the shell-write guard's to refuse.
+  const cdtrapCwd = realpathSync(mkdtempSync(join(tmpdir(), 'gate-cdtrap-')));
+  afterAll(() => rmSync(cdtrapCwd, { recursive: true, force: true }));
   const cdtrapCmd = (command: string) => ({
     tool_name: 'Bash',
     tool_input: { command },
     session_id: 's-cdtrap',
+    cwd: cdtrapCwd,
   });
   const run = (command: string) =>
     runGate(cdtrapCmd(command), { PAPERCUSP_SID: nextTrapSid() });
@@ -7680,5 +7686,134 @@ describe('unbounded symlink-following walk guard (WI-10000836)', () => {
   it('allows -L on a narrow root (one checkout) and a bare find on the broad root (the sibling guard owns that shape)', () => {
     expectAllow(runGate(bashCmd(`find -L ${fakeHome}/papercupai-workspace/papercusp/scripts -name x`)));
     expectAllow(runGate(bashCmd('find ~/.papercusp -name x')));
+  });
+});
+
+/**
+ * A shell write into ANY git repository, not only the canonical tree.
+ *
+ * A file lock follows where the file is on disk: an Edit or Write in any git
+ * repository takes one. A raw shell write skips that hook, so in a checkout
+ * several agents share it overwrites a peer's work with no arbitration, and a
+ * stray scratch file joins that checkout's next commit. Outside the canonical
+ * tree the rule is the canonical tree's own: refused unless Git ignores the
+ * exact target in the repository that owns it.
+ *
+ * The allows below are the other half of the rule (and its controls): a guard
+ * that refused every write would pass the denies alone.
+ */
+describe('shell write into another git repository (a lock follows the file on disk)', () => {
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', args, { cwd, stdio: 'ignore' });
+  const otherRepo = () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'gate-other-repo-')));
+    git(root, 'init', '--quiet');
+    mkdirSync(join(root, 'src'));
+    mkdirSync(join(root, 'scratch'));
+    writeFileSync(join(root, '.gitignore'), '*.log\nscratch/\nvendored/\n');
+    writeFileSync(join(root, 'src', 'tracked.ts'), 'export const a = 1;\n');
+    writeFileSync(join(root, 'kept.log'), 'a log the project keeps\n');
+    git(root, 'add', '.gitignore', 'src/tracked.ts');
+    git(root, 'add', '--force', 'kept.log');
+    return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  };
+  const expectOtherRepoDeny = (out: GateOut, root: string) => {
+    const reason = denyReason(out);
+    expect(reason).toContain('shell-write guard');
+    expect(reason).toContain(`the git repository at \`${root}\``);
+    expect(reason).toMatch(/Edit or Write/);
+    // Its own words: this is not the canonical tree's refusal.
+    expect(reason).not.toContain('shared staging tree');
+    return reason;
+  };
+
+  it.each([
+    ['a redirect to a file Git tracks', 'echo hi >> src/tracked.ts', 'shell redirect (`>>`)'],
+    ['a redirect creating a new file Git does not ignore', "cat > src/new.ts <<'EOF'\nexport const b = 2;\nEOF", 'shell redirect (`>`)'],
+    ['`tee`', 'echo hi | tee src/new.ts', '`tee`'],
+    ['`sed -i`', "sed -i 's/1/2/' src/tracked.ts", '`sed -i`'],
+    ['`cp`', 'cp /etc/hostname src/copied.ts', '`cp`'],
+  ])('denies %s with the session in that repository', (_label, command, construct) => {
+    const repo = otherRepo();
+    try {
+      const reason = expectOtherRepoDeny(runGate(bashCmd(command, { cwd: repo.root }), CANON_ENV), repo.root);
+      expect(reason).toContain(construct);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('denies by where the file is: an absolute target, and a relative one after a literal `cd`, from a session elsewhere', () => {
+    const repo = otherRepo();
+    const elsewhere = mkdtempSync(join(tmpdir(), 'gate-elsewhere-'));
+    try {
+      expectOtherRepoDeny(
+        runGate(bashCmd(`echo hi > ${repo.root}/src/tracked.ts`, { cwd: elsewhere }), CANON_ENV), repo.root);
+      expectOtherRepoDeny(
+        runGate(bashCmd(`cd ${repo.root} && echo hi > src/tracked.ts`, { cwd: elsewhere }), CANON_ENV), repo.root);
+    } finally {
+      repo.cleanup();
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('allows a target Git ignores in that repository, and still denies an ignored-looking file Git tracks', () => {
+    const repo = otherRepo();
+    try {
+      expectAllow(runGate(bashCmd('echo hi > out.log', { cwd: repo.root }), CANON_ENV));
+      expectAllow(runGate(bashCmd('echo hi > scratch/probe.txt', { cwd: repo.root }), CANON_ENV));
+      // `kept.log` matches `*.log` but is in the index: Git does not ignore a tracked file.
+      expectOtherRepoDeny(runGate(bashCmd('echo hi >> kept.log', { cwd: repo.root }), CANON_ENV), repo.root);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('asks the repository that OWNS the file: a parent rule ignoring a nested repository does not exempt its files', () => {
+    const repo = otherRepo();
+    try {
+      const nested = join(repo.root, 'vendored', 'lib');
+      mkdirSync(nested, { recursive: true });
+      git(nested, 'init', '--quiet');
+      // The parent ignores `vendored/`; the nested repository ignores nothing.
+      expectOtherRepoDeny(runGate(bashCmd('echo hi > vendored/lib/index.ts', { cwd: repo.root }), CANON_ENV), nested);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it("allows a write into the repository's own `.git` directory", () => {
+    const repo = otherRepo();
+    try {
+      expectAllow(runGate(bashCmd("printf '.papercusp/\\n' >> .git/info/exclude", { cwd: repo.root }), CANON_ENV));
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('allows a write under a HOME that is itself a repository (it takes no repository lock either)', () => {
+    const repo = otherRepo();
+    try {
+      expectAllow(runGate(
+        bashCmd('echo hi > notes.txt', { cwd: repo.root }),
+        { ...CANON_ENV, PAPERCUSP_EXTERNAL_LOCK_HOME: repo.root },
+      ));
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('allows a target in no repository, and one Git cannot be asked about', () => {
+    const plain = realpathSync(mkdtempSync(join(tmpdir(), 'gate-no-repo-')));
+    try {
+      expectAllow(runGate(bashCmd('echo hi > out.txt', { cwd: plain }), CANON_ENV));
+      // A `.git` holding only HEAD passes for a repository root, and Git itself
+      // refuses to read it: unknown never refuses.
+      mkdirSync(join(plain, '.git'));
+      writeFileSync(join(plain, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+      expectAllow(runGate(bashCmd('echo hi > out.txt', { cwd: plain }), CANON_ENV));
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+    }
   });
 });

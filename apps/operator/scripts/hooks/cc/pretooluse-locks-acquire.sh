@@ -539,7 +539,8 @@ if _foreign_offer:
             f'session is foreign-marked (offer {_foreign_offer}). A foreign session '
             'edits nothing without a live registry verdict (fail-closed).'))
     # allow → fall through: a foreign clone lives outside the papercup
-    # workspace, so the lock-scoping below skips it (nothing to lock).
+    # workspace; its files take locks by where they are on disk, like any
+    # other repository's.
 else:
     # HOST session. Foreign roots live OUTSIDE the workspace root by the Q1
     # registration invariant, so only out-of-workspace paths can ever hit one
@@ -792,17 +793,25 @@ def _origin_is_local_path_into_canonical(url, repo_root, canonical_tree,
         return False
 
 
-# Scope enforcement to the papercup workspace. Its worktrees (papercup,
-# papercup-<topic>, …) are direct children of WORKSPACE_ROOT. We compute
-# lock keys as paths RELATIVE TO each worktree root, so the same logical
-# file collides across worktrees AND with the OMP hook (which keys the
-# same way) — that's the cross-client/cross-worktree contention we want.
+# A file lock keys on the REPOSITORY the file is in (its real folder on disk) and
+# the file's path inside it. That holds for every git repository, wherever it is:
+# two agents editing one file on disk meet on one lock.
+#
+# The papercup workspace keeps its own rules on top. Its worktrees (papercup,
+# papercup-<topic>, …) are direct children of WORKSPACE_ROOT, and the worktree
+# guard below refuses edits in any of them but the canonical tree.
 # A non-repository file below the current user's HOME or XDG_RUNTIME_DIR is
 # mapped to a reserved logical key. This coordinates shared desktop/config and
 # runtime credential edits (mimeapps.list, KDE settings, agent config,
 # Playwright storage state) without weakening the server's no-absolute-path
-# lock-store contract. Other repos and paths outside those roots stay
-# unguarded.
+# lock-store contract. A file in no repository and outside those roots stays
+# unguarded, and so does a HOME that is itself a repository (see
+# `_any_repository_root`).
+#
+# Until 2026-11-23 a repository outside the workspace was skipped: several agents
+# working in one checkout elsewhere took no lock at all, and could overwrite each
+# other. By the owner's ruling a lock follows where the file is on disk,
+# regardless of workspace.
 workspace_root = os.path.realpath(
     os.environ.get('PAPERCUSP_WORKSPACE_ROOT')
     or os.path.expanduser('~/papercupai-workspace')
@@ -819,8 +828,9 @@ def _workspace_repo_root(repo_root):
 
     A submodule has its own `.git` entry, so find_repo_root returns the
     submodule rather than the enclosing staging checkout. The enclosing
-    direct-child repo still owns worktree policy; unrelated repos outside the
-    workspace (and arbitrary nested repos below them) remain out of scope.
+    direct-child repo still owns worktree policy. None means "not a workspace
+    tree": a repository elsewhere still takes locks, by its own folder on disk
+    (`_any_repository_root`).
     """
     candidate = os.path.realpath(repo_root)
     if (candidate == workspace_root
@@ -861,6 +871,25 @@ def _managed_suite_app_repo(repo_root):
         return False
 
 
+def _any_repository_root(repo_root):
+    """Whether `repo_root` is a git repository whose files take locks by where they are on disk.
+
+    Every repository does, except the current user's HOME when HOME is itself a
+    repository (a dotfiles checkout): that would put every file under HOME in
+    one lock domain, where the reserved `@external/home` keys already cover the
+    shared configuration files.
+    """
+    try:
+        if not _valid_git_entry(repo_root):
+            return False
+        home_root = os.path.realpath(
+            os.environ.get('PAPERCUSP_EXTERNAL_LOCK_HOME')
+            or os.path.expanduser('~'))
+        return os.path.realpath(repo_root) != home_root
+    except Exception:
+        return False
+
+
 def _is_isolation_worktree(repo_root, canonical_tree):
     """Migration/synthesis isolation worktrees stay outside automatic locks."""
     marker = os.path.join(canonical_tree, '.papercusp', 'worktrees')
@@ -883,7 +912,8 @@ def _external_lock_key(abs_path):
 
     A user's HOME may itself be a git repo, so this check cannot depend on
     find_repo_root returning None. Keep automatic HOME scope to dot-directories;
-    an unrelated ~/project repo stays outside Papercusp coordination. Runtime
+    an unrelated ~/project repo gets no reserved key here and takes locks as any
+    other repository does, by its own folder on disk. Runtime
     files are scoped to the current user's XDG_RUNTIME_DIR (or Linux's
     /run/user/<uid> fallback) and may use any relative path beneath it.
     Explicit locks:acquire external_paths uses the same roots server-side.
@@ -1034,7 +1064,12 @@ for p in raw_paths:
             _external_key = _external_lock_key(abs_p)
             if _external_key:
                 repo_relative.append(_external_key)
-            continue  # Outside a workspace worktree remains uncoordinated.
+                continue  # A HOME/runtime file keeps its reserved key.
+            if not _any_repository_root(root):
+                continue  # Not a repository whose files take locks.
+            # Any other repository: the lock is this repository's folder on
+            # disk plus the path inside it, exactly as for a workspace tree.
+            _scope_root = root
         _scope_real = os.path.realpath(_scope_root)
         if _is_isolation_worktree(root, _canonical_tree):
             continue  # Preserve migration/synthesis isolation semantics.

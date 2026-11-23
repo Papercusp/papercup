@@ -4766,6 +4766,96 @@ def _is_sanctioned_scratch(resolved, canon):
     return _scratch_ignore_status(resolved, canon) == 'ignored'
 
 
+# ── A shell write into ANY OTHER git repository ───────────────────────────────
+#
+# A file lock follows where the file is on disk: an Edit or Write in any git
+# repository takes one (pretooluse-locks-acquire.sh, `_any_repository_root`). A
+# raw shell write skips that hook, so two agents sharing one checkout overwrite
+# each other with no arbitration, and a stray scratch file lands in that
+# checkout's next commit. Outside the canonical tree the rule is therefore the
+# canonical tree's own: refused unless Git ignores the exact target in the
+# repository that owns it.
+#
+# Left alone, each because the lock hook leaves it alone or because no work-tree
+# file is touched:
+#   - a target in no repository (scratch under /tmp, ~/.papercusp/...);
+#   - a HOME that is itself a repository (a dotfiles checkout);
+#   - a repository's own `.git` directory;
+#   - a target Git could not be asked about (no git, a timeout, a repository
+#     Git refuses to read): unknown never refuses, the same fail-open as every
+#     other target this guard cannot resolve.
+# An interpreter's own write (`python -c "open(...)"`) into another repository
+# is NOT covered: `_interpreter_write_guard` still knows the canonical tree only.
+_OTHER_REPOSITORY_CACHE = {}
+
+
+def _valid_git_entry(d):
+    """A `.git` FILE (submodule / linked worktree) or a `.git` DIR holding HEAD.
+
+    Mirrors pretooluse-locks-acquire.sh `_valid_git_entry`: the two hooks must
+    agree on what a repository is, or a file would be locked but not guarded.
+    """
+    g = os.path.join(d, '.git')
+    if os.path.isfile(g):
+        return True
+    if os.path.isdir(g):
+        return os.path.exists(os.path.join(g, 'HEAD'))
+    return False
+
+
+def _owning_repository(resolved):
+    """The nearest directory at or above the target holding a valid `.git` entry."""
+    _d = resolved if os.path.isdir(resolved) else os.path.dirname(resolved)
+    while _d and not os.path.isdir(_d):
+        _next = os.path.dirname(_d)
+        if _next == _d:
+            return None
+        _d = _next
+    while _d and _d != os.path.dirname(_d):
+        if _valid_git_entry(_d):
+            return _d
+        _d = os.path.dirname(_d)
+    return None
+
+
+def _other_repository_write(resolved):
+    """The repository a shell write to `resolved` must be refused in, else None."""
+    if resolved in _OTHER_REPOSITORY_CACHE:
+        return _OTHER_REPOSITORY_CACHE[resolved]
+    _refused_in = None
+    try:
+        _root = _owning_repository(resolved)
+        _home = os.path.realpath(
+            os.environ.get('PAPERCUSP_EXTERNAL_LOCK_HOME')
+            or os.path.expanduser('~'))
+        _git_dir = os.path.join(_root, '.git') if _root else None
+        if (_root
+                and os.path.realpath(_root) != _home
+                and resolved != _git_dir
+                and not resolved.startswith(_git_dir + os.sep)):
+            _env = {k: v for k, v in os.environ.items()
+                    if k not in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE')}
+            _check = subprocess.run(
+                ['git', 'check-ignore', '--quiet', '--',
+                 os.path.relpath(resolved, _root)],
+                cwd=_root,
+                env=_env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=1,
+                check=False,
+            )
+            # 0 = ignored, 1 = not ignored (a tracked file is never ignored),
+            # anything else = Git could not say.
+            if _check.returncode == 1:
+                _refused_in = _root
+    except Exception:
+        _refused_in = None
+    _OTHER_REPOSITORY_CACHE[resolved] = _refused_in
+    return _refused_in
+
+
 # The scratch remedy BOTH write-guards hand back. Kept as ONE constant so the
 # two call sites cannot drift apart — the same reason the cd-resolution note is
 # shared rather than duplicated.
@@ -5527,6 +5617,32 @@ def _shell_write_guard():
                 % (_construct, _raw, _relative_target_cd_note(_raw, _at, _clean, _has_paren),
                    _scratch_remedy_for_target(_resolved, _canon))
             )
+        _other_root = None
+        if (_resolved and _resolved != _canon
+                and not _resolved.startswith(_canon + os.sep)):
+            _other_root = _other_repository_write(_resolved)
+        if _other_root:
+            _DENY_VIEW['clean'], _DENY_VIEW['at'] = _clean, _at
+            _DENY_VIEW['inReason'] = True  # shell text — safe to quote back
+            deny(
+                'shell-write guard: this %s targets `%s`, a file in the git repository '
+                'at `%s`. A raw shell write skips the file lock that Edit and Write take '
+                'on a file wherever it is on disk, so it can overwrite the work of '
+                'another agent in the same checkout, and a stray file left there joins '
+                'the next commit of that checkout. Use the Edit or Write tool instead (for a '
+                'copy: Read the source, then Write the destination). '
+                '%s'
+                'Genuinely a scratch or log file? Write it outside the repository, '
+                'under a per-session/task-unique directory (for example '
+                '`/tmp/<session-or-task>/`), or at a path Git ignores in that '
+                'repository (`git check-ignore -q -- <exact-target>`). '
+                'NOTHING in this Bash call ran — the whole command was rejected '
+                'before execution, including any earlier statement in a '
+                '`&&`/`;`-chained compound command — re-issue the whole command after '
+                'fixing the target, do not assume an earlier part of it already ran.'
+                % (_construct, _raw, _other_root,
+                   _relative_target_cd_note(_raw, _at, _clean, _has_paren))
+            )
         # EI-19966359020779598 — `_resolve_write_target` bailed on `_raw`
         # because it carries an expansion marker ($/`/~/*/?/[), the same
         # LITERAL-PATHS-ONLY policy this whole guard has always used. That
@@ -5549,8 +5665,8 @@ def _shell_write_guard():
         # and only for the bare-`$VAR` shape actually reaching this loop —
         # never touching the `_segment_has_unsplittable_expansion` skip
         # branches above).
-        elif (not _resolved and not _construct.startswith('shell redirect')
-              and any(ch in _raw for ch in ('$', '`', '~', '*', '?', '['))):
+        if (not _resolved and not _construct.startswith('shell redirect')
+                and any(ch in _raw for ch in ('$', '`', '~', '*', '?', '['))):
             _saw_unresolvable_inplace_target = True
 
     if _saw_unresolvable_inplace_target and not ADVISORY:

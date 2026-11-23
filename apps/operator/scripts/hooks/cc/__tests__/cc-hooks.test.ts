@@ -82,7 +82,7 @@ describe("cc PreToolUse hook — operator-independent paths", () => {
     expect(r.stdout).toBe("");
   });
 
-  it("edit OUTSIDE the workspace → allow, never coordinated (no operator call)", () => {
+  it("edit in NO repository, outside the workspace → allow, never coordinated (no operator call)", () => {
     const r = run(
       payload({
         tool_name: "Edit",
@@ -97,6 +97,66 @@ describe("cc PreToolUse hook — operator-independent paths", () => {
     expect(r.stdout).toBe("");
     // Out-of-scope means we never reached the operator → no error marker.
     expect(fs.existsSync(join(cache, "last-error.json"))).toBe(false);
+  });
+
+  it("edit in a git repository OUTSIDE the workspace is coordinated too: a lock follows where the file is on disk", () => {
+    // Until 2026-11-23 only the workspace's own trees took locks, so several agents sharing a
+    // checkout anywhere else could overwrite each other with no lock asked for at all.
+    const elsewhere = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), "cchook-elsewhere-")));
+    const other = join(elsewhere, "some-project");
+    fs.mkdirSync(join(other, ".git"), { recursive: true });
+    fs.writeFileSync(join(other, ".git", "HEAD"), "ref: refs/heads/main\n");
+    fs.mkdirSync(join(other, "src"), { recursive: true });
+    const owner = "outside-repository-owner";
+    const marker = join(cache, `owner-${owner}-last-error.json`);
+    fs.rmSync(marker, { force: true });
+    try {
+      const r = run(
+        payload({
+          tool_name: "Edit",
+          tool_input: { file_path: join(other, "src", "a.py") },
+          tool_use_id: "outside-repository",
+          session_id: "s",
+          cwd: other,
+        }),
+        { PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1", PAPERCUSP_LOCK_SID: owner },
+      );
+      expect(r.status).toBe(0); // the unreachable operator still fails open
+      expect(r.stdout).toBe("");
+      // The marker proves the path passed the scope gate and attempted locks:acquire.
+      expect(fs.existsSync(marker)).toBe(true);
+    } finally {
+      fs.rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it("a HOME that is itself a repository does not put every file under it in one lock domain", () => {
+    const repoHome = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), "cchook-repohome-")));
+    fs.mkdirSync(join(repoHome, ".papercusp"), { recursive: true });
+    fs.writeFileSync(join(repoHome, ".papercusp", "superuser-token"), "test-token\n");
+    fs.writeFileSync(join(repoHome, ".papercusp", "su-agent-id"), "test-agent\n");
+    fs.mkdirSync(join(repoHome, ".git"), { recursive: true });
+    fs.writeFileSync(join(repoHome, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const owner = "repository-home-owner";
+    const marker = join(cache, `owner-${owner}-last-error.json`);
+    fs.rmSync(marker, { force: true });
+    try {
+      const r = run(
+        payload({
+          tool_name: "Edit",
+          tool_input: { file_path: join(repoHome, "notes.txt") },
+          tool_use_id: "repository-home",
+          session_id: "s",
+          cwd: repoHome,
+        }),
+        { HOME: repoHome, PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1", PAPERCUSP_LOCK_SID: owner },
+      );
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe("");
+      expect(fs.existsSync(marker)).toBe(false); // never reached the operator
+    } finally {
+      fs.rmSync(repoHome, { recursive: true, force: true });
+    }
   });
 
   it("in-workspace edit + operator unreachable → FAIL-OPEN allow + last-error marker", () => {

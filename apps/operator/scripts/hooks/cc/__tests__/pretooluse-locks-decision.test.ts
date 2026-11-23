@@ -342,7 +342,11 @@ const nativeBatchInput = (
 });
 
 describe("cc PreToolUse hook — operator decision rendering (stub operator)", () => {
-  it("a serving-candidate workspace root skips canonical edits; the canonical workspace reaches arbitration (EI-25920487778813638)", async () => {
+  it("a serving-candidate workspace root reaches arbitration for a canonical edit, under the same lock as the canonical workspace (EI-25920487778813638)", async () => {
+    // A lock follows where the file is on disk. A session whose workspace root is a
+    // serving candidate used to skip an edit of the canonical tree (the tree was
+    // "outside its workspace"), so that edit took no lock at all. It now asks for
+    // the lock the canonical workspace asks for: same repository folder, same path.
     const candidate = join(ws, 'papercusp-staging.generations', '.candidate-test');
     fs.mkdirSync(candidate, { recursive: true });
     const input = {
@@ -351,16 +355,21 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
       tool_use_id: 'scope-counterfactual', session_id: 'scope-owner', cwd: repo,
     };
     const identity = { PAPERCUSP_SID: 'scope-owner', PAPERCUSP_LOCK_SID: 'scope-owner' };
-    const outside = await run(input, { ...identity, PAPERCUSP_WORKSPACE_ROOT: candidate });
-    expect(outside).toEqual({ status: 0, stdout: '' });
-    expect(requests.filter((request) => request.body.params?.name)).toEqual([]);
-    expect(fs.existsSync(join(cache, 'owner-scope-owner-last-decision.json'))).toBe(false);
+    const lockOf = () => {
+      const args = lastRequest?.body.params.arguments;
+      return { name: lastRequest?.body.params.name, domain: args?.coordination_domain, paths: args?.paths };
+    };
+    const expected = { name: 'locks:acquire', domain: fs.realpathSync(repo), paths: ['sub/scope.ts'] };
 
-    const coordinated = await run(input, { ...identity, PAPERCUSP_WORKSPACE_ROOT: ws });
-    expect(coordinated.status).toBe(0);
-    expect(lastRequest?.body.params.name).toBe('locks:acquire');
-    expect(lastRequest?.body.params.arguments.paths).toEqual(['sub/scope.ts']);
+    const fromCandidate = await run(input, { ...identity, PAPERCUSP_WORKSPACE_ROOT: candidate });
+    expect(fromCandidate.status).toBe(0);
+    expect(lockOf()).toEqual(expected);
     expect(fs.existsSync(join(cache, 'owner-scope-owner-last-decision.json'))).toBe(true);
+
+    lastRequest = null;
+    const fromCanonical = await run(input, { ...identity, PAPERCUSP_WORKSPACE_ROOT: ws });
+    expect(fromCanonical.status).toBe(0);
+    expect(lockOf()).toEqual(expected);
   });
 
   it("grant (ok:true) → allow (exit 0, no decision) and CACHES the lock_id for release", async () => {
