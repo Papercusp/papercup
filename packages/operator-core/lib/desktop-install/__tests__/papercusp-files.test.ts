@@ -112,6 +112,32 @@ afterEach(async () => {
 });
 
 describe('installPapercuspFiles', () => {
+  it('an OMP extension that cannot be bundled does not cost the Claude hooks their install', async () => {
+    // A packaged server can carry an extension source that imports a module it does not ship.
+    await fs.writeFile(
+      path.join(tmpAppRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts'),
+      "import { home } from '@papercusp/not-shipped-here/home';\nexport const where = home;\n",
+    );
+    const cc = path.join(tmpAppRoot, 'scripts', 'hooks', 'cc');
+    await fs.mkdir(cc, { recursive: true });
+    await fs.writeFile(path.join(cc, 'pretooluse-locks-acquire.sh'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+
+      // The extension is reported as not installed, and the failure was said out loud.
+      expect(result.extensionWritten).toBe(false);
+      expect(error.mock.calls.some(([message]) => String(message).includes('OMP hook bundle load check FAILED'))).toBe(true);
+      // Everything after it still ran: the Claude hooks are on disk and enrolled.
+      expect(result.claudeHooksInstalled).toContain('pretooluse-locks-acquire.sh');
+      expect(result.claudeSettingsMerged).toBe(true);
+      await expect(fs.stat(path.join(tmpHome, '.papercusp', 'hooks', 'cc', 'pretooluse-locks-acquire.sh'))).resolves.toBeTruthy();
+      await expect(fs.stat(path.join(tmpHome, '.claude', 'settings.json'))).resolves.toBeTruthy();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   it('first install: mints token + agent_id, copies playbook + extension', async () => {
     const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
 

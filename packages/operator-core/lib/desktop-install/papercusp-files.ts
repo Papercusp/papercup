@@ -4204,16 +4204,29 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // Reuse that provenance to keep a green-release process from replacing the
   // newer staging extension loaded by the next visible OMP session.
   const ompHookProvenanceDir = path.join(paths.papercuspDir, 'hooks', 'omp');
-  const extensionBundle = extensionSource
-    ? await installOmpHookBundle({
+  // The OMP extension is ONE client's integration. A source it cannot bundle here (a packaged
+  // server that does not carry a module the extension imports) used to throw out of this whole
+  // install, so the Claude hooks, the injection hooks and everything else below were never
+  // installed either: a host with no OMP lost its Claude hooks to an OMP build failure.
+  // `installOmpHookBundle` has already logged the failure; record it and carry on.
+  let extensionBundle: OmpHookBundleInstallResult = { installed: [], unresolved: [] };
+  if (extensionSource) {
+    try {
+      extensionBundle = await installOmpHookBundle({
         sourceDir: path.dirname(extensionSource),
         entryFile: path.basename(extensionSource),
         destinationDir: paths.papercuspDir,
         destinationEntry: path.basename(paths.extensionPath),
         provenanceGuardDir: ompHookProvenanceDir,
         provenanceLabel: 'OMP coordination extension',
-      })
-    : { installed: [] as string[], unresolved: [] as string[] };
+      });
+    } catch (error) {
+      extensionBundle = {
+        installed: [],
+        unresolved: [`${path.basename(extensionSource)}: ${(error as Error).message ?? String(error)}`],
+      };
+    }
+  }
   const extensionWritten = extensionBundle.installed.includes(path.basename(paths.extensionPath));
 
   // Claude/Codex CC hooks + fleet statusline (EI-8191): install the hooks to
