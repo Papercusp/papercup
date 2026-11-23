@@ -69,9 +69,6 @@ type DecisionInput = import('../../attention/bulk-dispositions').BulkIntakeDecis
 let db: OrgTestDb;
 
 beforeAll(async () => {
-  // POST_CUTOVER is beyond a far-future sentinel. Filing grace is an independent
-  // caller-relative floor; leave it neutral so it cannot mask receipt admission.
-  vi.stubEnv('PAPERCUSP_FILING_GRACE_SEC', '0');
   // The double accept runs a lock holder, its writer and a waiter at once (see the P-006 suite).
   db = await createOrgTestDb({ adminPoolMax: 4 });
   h.sql = db.adminSql;

@@ -809,13 +809,13 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     }));
   });
 
-  it('rechecks fresh-filer grace as the current holder before accepting scope', async () => {
+  it('rechecks a cooldown refusal as the current holder before accepting scope', async () => {
     const filedGrace = {
       id: held.id,
       admissible: false,
       refusedBy: 'cooldown',
       failedFloors: ['cooldown'],
-      detail: 'filed by another assignee within the filing-grace window',
+      detail: 'released by this assignee within the release-cooldown window',
       scopeHolder: 'su-member',
       scopeStatus: 'open',
     };

@@ -1096,11 +1096,9 @@ export const ISSUE_CLAIM_FLOORS = [
   { ok: 'ok_watchdog_recovery', bucket: 'watchdog_recovery', field: 'watchdogRecovery' },
   { ok: 'ok_rig', bucket: 'cross_machine_rig', field: 'crossMachineRig' },
   { ok: 'ok_no_blocker', bucket: 'blocked_dep', field: 'blockedDep' },
-  // BOTH caller-relative cooldown reasons, deliberately in ONE bucket (WI-5939): the row was
-  // released by THIS caller inside the release window (mig 499), OR it was FILED BY SOMEONE
-  // ELSE inside the filing-grace window, which holds a fresh filing for its filer so
-  // file-then-fix cannot be raced. Both clear on their own with no action; a row you filed
-  // yourself is never in the second leg. Knob: PAPERCUSP_FILING_GRACE_SEC (0 disables).
+  // The caller-relative cooldown: the row was released by THIS caller inside the release
+  // window (mig 499). It clears on its own with no action. (There is no filing hold: a filer
+  // that means to work its own filing claims it in the same call with assign_to:'self'.)
   { ok: 'ok_cooldown', bucket: 'cooldown', field: 'cooldown' },
   // WI-6409: a true-remote-origin row (federated in from a peer node, not authored by this
   // node — see isIssueLocallyClaimableWhereSql). The real claim path (claimNextIssueWorkItem)
@@ -1569,10 +1567,9 @@ export function issueClaimCandidateSubquery(
       (${depsBlockedExclusionSql(sql)})                                 AS ok_no_blocker,
       -- Mig 499 + WI-5939: the per-claim cooldown floor — the SAME exported fragment
       -- claimNextIssueWorkItem enforces, so this preview and the real claim door cannot
-      -- disagree. It covers BOTH caller-relative reasons (released-by-me, and filed-by-someone-
-      -- else inside the filing-grace window); an exclusion for either reports here, under the
-      -- one cooldown breakdown bucket, per WI-5939 "do not add a parallel mechanism".
-      (${issueCooldownExclusionSql(sql, assignee, cooldown, undefined, undefined, undefined, claimantFleetSlug)}) AS ok_cooldown,
+      -- disagree. It covers the caller-relative release cooldown and release damping; an
+      -- exclusion for either reports here, under the one cooldown breakdown bucket.
+      (${issueCooldownExclusionSql(sql, assignee, cooldown)}) AS ok_cooldown,
       -- P-013/D-012 stop-the-line: while the harness's gate-red-streak condition item has
       -- been open >24h, non-repair rows are not self-selectable (bugs + alarm-condition
       -- items exempt; by-id claims bypass floors by design). Same shared-fragment

@@ -37,7 +37,7 @@ import { performance } from 'node:perf_hooks';
 import { readIssueClaimability, type IssueClaimabilityReadStage } from '../../scheduler/get-next';
 import { formatLowSeverityShare } from '../../scheduler/admitted-composition-format';
 import { planItemLaneBlockReason } from '../../scheduler/plan-item-lane-guard';
-import { filingGraceSec } from '../../work-items';
+import { releaseCooldownSec } from '../../work-items';
 import { potHomeSlugForHarness } from '../../hive-federation';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import {
@@ -483,7 +483,7 @@ export default defineTool({
     // undefined states ⇒ the oracle/lister apply their own ISSUE_FAMILY_CLAIMABLE_STATES default.
     const states = args.states ?? specStates;
     const limit = args.limit ?? 20;
-    const filingGraceSeconds = filingGraceSec();
+    const releaseCooldownSeconds = releaseCooldownSec();
 
     // ONE read-only REPEATABLE READ snapshot for the counts, the row list, AND the
     // excluded sample (WI-5947). Issued as separate round-trips these observe different
@@ -686,7 +686,7 @@ export default defineTool({
           harnessResolution: claimableHarnessScope.resolution,
           caller: assignee,
           callerRelative: true,
-          filingGraceSeconds,
+          releaseCooldownSeconds,
           rigAvailable: args.rigAvailable === true,
           planProseScanComplete,
           fleetControl,
@@ -705,7 +705,7 @@ export default defineTool({
           status: {
             id: 'claimable-for-caller',
             definition:
-              'claimable now for the named caller under its cooldown, filing grace, rig, reserved-lane, and fleet-control context',
+              'claimable now for the named caller under its release cooldown, rig, reserved-lane, and fleet-control context',
           },
           exactness: claimableExactness,
           zeroMeaning:
@@ -732,13 +732,13 @@ export default defineTool({
       ok: true as const,
       harness,
       claimableHarnessScope,
-      /** Claimability includes caller-relative release cooldown and filing grace. A fleet
+      /** Claimability includes the caller-relative release cooldown. A fleet
        * leader must not treat this caller's count as every peer's immediately-ready count. */
       claimableCallerScope: {
         assignee,
         callerRelative: true,
-        filingGraceSeconds,
-        peerReadinessMayDiffer: filingGraceSeconds > 0,
+        releaseCooldownSeconds,
+        peerReadinessMayDiffer: releaseCooldownSeconds > 0,
         /** EI-23772523186892689: present only when a per-agent spec overrides the caller's
          * fleet spec — names BOTH lanes so a fleet leader cannot read this count as the fleet's. */
         ...(callerFleetSpec ? { fleetSpecComparison: callerFleetSpec } : {}),
@@ -797,8 +797,8 @@ export default defineTool({
         : {}),
       states: states ? [...states] : null,
       note:
-        '`claimableCount` is authoritative for THIS CALLER (spec_match AND all ~12 floors, MINUS any plan-prose owner-gated row this page detected — the SAME oracle scheduler:get_next runs, plus the post-claim plan-lane guard it also applies). Caller-relative release cooldown and filing grace mean another fleet member may have a different total; a fresh row is visible to its filer before peers for up to ' +
-        `${filingGraceSeconds}s. excludedBreakdown buckets OVERLAP, so they do NOT sum to matched−claimable. READ ONLY — nothing was claimed; take one via work_items:claim / scheduler:get_next.` +
+        '`claimableCount` is authoritative for THIS CALLER (spec_match AND all ~12 floors, MINUS any plan-prose owner-gated row this page detected — the SAME oracle scheduler:get_next runs, plus the post-claim plan-lane guard it also applies). The caller-relative release cooldown means another fleet member may have a different total; a row this caller released is held back from it alone for up to ' +
+        `${releaseCooldownSeconds}s. excludedBreakdown buckets OVERLAP, so they do NOT sum to matched−claimable. READ ONLY — nothing was claimed; take one via work_items:claim / scheduler:get_next.` +
         (fleetWindingDown
           ? ` ⚠ FLEET WINDING DOWN${fleetControl.reason ? `: ${fleetControl.reason}` : ''} — the caller-effective spec is still reported above, but fleet control blocks NEW work, so claimableCount/rows are forced to zero; matchedByFilter is diagnostic only.`
           : '') +

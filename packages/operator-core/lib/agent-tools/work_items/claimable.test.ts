@@ -282,12 +282,12 @@ describe('work_items:claimable handler', () => {
     expect(out.claimableCallerScope).toEqual({
       assignee: 'probe',
       callerRelative: true,
-      filingGraceSeconds: 600,
+      releaseCooldownSeconds: 300,
       peerReadinessMayDiffer: true,
     });
     expect(out.note).toContain('authoritative for THIS CALLER');
     expect(out.note).toContain('another fleet member may have a different total');
-    expect(out.note).toContain('up to 600s');
+    expect(out.note).toContain('up to 300s');
     expect(out.matchedByFilter).toBe(9);
     expect(out.affinityCoverage).toEqual({ denominator: 3, nonEmptyPaths: 2, floor: 0.5, belowFloor: false });
     expect(out.returned).toBe(3);

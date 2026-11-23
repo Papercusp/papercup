@@ -1006,18 +1006,11 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
  * claimable no longer lists it.
  */
 describe('work_items:claimable × work_items:withdraw — withdrawn filing leaves the queue (R-2, real PG)', () => {
-  // A fresh filing is held out of claimable for PAPERCUSP_FILING_GRACE_SEC (default 600s, so
-  // the filer can self-claim first); zero it so a just-filed row is visible to the read.
-  let priorGrace: string | undefined;
   beforeEach(() => {
     h.stubDefaultClaimSpec = true;
-    priorGrace = process.env.PAPERCUSP_FILING_GRACE_SEC;
-    process.env.PAPERCUSP_FILING_GRACE_SEC = '0';
   });
   afterEach(() => {
     h.stubDefaultClaimSpec = false;
-    if (priorGrace === undefined) delete process.env.PAPERCUSP_FILING_GRACE_SEC;
-    else process.env.PAPERCUSP_FILING_GRACE_SEC = priorGrace;
   });
   const claimableIds = async (): Promise<string[]> => {
     const out = (await call(claimableTool, { harness: 'papercup' })) as { rows?: { id: string }[] };

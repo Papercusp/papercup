@@ -123,7 +123,7 @@ export const HOLD_REGISTRY: readonly HoldRegistryEntry[] = [
   entry('claim-floor', 'agent-review', 'transient', AGENT_REVIEW_LANE, HOUR),
   entry('claim-floor', 'watchdog-recovery-window', 'transient', routine('watchdog auto-close (six complete ran ticks)'), HOUR),
   entry('claim-floor', 'blocked-dep', 'transient', lane('the holder of the blocking work-item'), HOUR),
-  entry('claim-floor', 'cooldown', 'transient', routine('elapsed time (release cooldown / filing grace)'), QUARTER_HOUR),
+  entry('claim-floor', 'cooldown', 'transient', routine('elapsed time (release cooldown)'), QUARTER_HOUR),
   entry('claim-floor', 'stop-line', 'transient', routine('green-checkpoint (lifts when the gate greens)'), HOUR),
   // D-023 point 3: claimant-specific — refused for the reporter or implementer only. The key is
   // the claim door's own refusal code (agent-tools/work_items/claim.ts), not an oracle label.

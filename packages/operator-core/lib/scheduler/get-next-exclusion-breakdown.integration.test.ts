@@ -57,8 +57,7 @@ async function seedIssue(
     takenBy?: string;
     lastReleasedBy?: string;
     lastReleasedAgoSec?: number;
-    /** WI-5939: how long ago the row was FILED. Default 0 = the epoch, i.e. far outside any
-     *  filing-grace window — so every pre-existing case here is untouched by that floor. */
+    /** How long ago the row was FILED. Default 0 = the epoch. */
     createdAgoSec?: number;
     origin?: string;
   } = {},
@@ -271,24 +270,18 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
     expect(out.excluded.cooldown).toBe(1);
   });
 
-  // WI-5939 — filing IS publishing. A row filed moments ago is held back from every agent
-  // EXCEPT its filer, and (the item's own acceptance) that exclusion reports under the
-  // EXISTING `cooldown` bucket rather than a new parallel one. This is the PREVIEW half of
-  // the floor; claim-issues-claimable.integration.test.ts pins the real claim door, and the
-  // two share one fragment (issueCooldownExclusionSql) precisely so they cannot drift.
-  it('applies the filing-grace floor to a PEER but never to the filer, under the cooldown bucket', async () => {
-    // Filed seconds ago by someone else — graced FOR US.
+  // There is no filing hold (removed 2026-11-23): a row someone else filed seconds ago is
+  // claimable by a peer at once, and nothing about a row's age or filer reports under the
+  // `cooldown` bucket. This is the PREVIEW half; claim-issues-claimable.integration.test.ts
+  // pins the real claim door, and the two share one fragment (issueCooldownExclusionSql).
+  it('counts a row another agent filed seconds ago as claimable, with nothing under the cooldown bucket', async () => {
     await seedIssue('WI-9611', { _ei: { created_by: 'su-the-filer' } }, { createdAgoSec: 5 });
-    // Filed seconds ago by US — the filer claims their own filing instantly.
     await seedIssue('WI-9612', { _ei: { created_by: 'su-asking' } }, { createdAgoSec: 5 });
-    // Filed by someone else, but long enough ago that the window has cleared.
-    await seedIssue('WI-9613', { _ei: { created_by: 'su-the-filer' } }, { createdAgoSec: 10_000 });
-    // Fresh, but NO filer recorded — fail-OPEN: an unknown filer never gates the row.
     await seedIssue('WI-9614', {}, { createdAgoSec: 5 });
 
     const out = await aggregateIssueClaimExclusions(undefined, { harness: H, assignee: 'su-asking' });
-    expect(out.matchedByFilter).toBe(4);
-    expect(out.excluded.cooldown).toBe(1);
+    expect(out.matchedByFilter).toBe(3);
+    expect(out.excluded.cooldown).toBe(0);
     expect(out.claimable).toBe(3);
   });
 

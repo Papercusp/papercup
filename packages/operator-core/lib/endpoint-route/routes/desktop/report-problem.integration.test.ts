@@ -427,9 +427,6 @@ describe('desktop Report a problem door, end to end', () => {
   });
 
   it('P-023: one desktop, agent and watchdog identity survives verification, claim, completion and publication', async () => {
-    // The filing timer has its own scheduler controls. Isolate wall-clock delay
-    // here while keeping duplicate admission and verification on their real paths.
-    vi.stubEnv('PAPERCUSP_FILING_GRACE_SEC', '0');
     const s = suffix();
     const payload = buildProblemReport({
       text: `Export to CSV does nothing on board ${s}`,

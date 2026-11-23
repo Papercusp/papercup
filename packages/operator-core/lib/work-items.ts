@@ -7071,31 +7071,20 @@ export function releaseDampingWindowSec(): number {
   return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 14400;
 }
 
-/** WI-5939 — FILING-GRACE window (seconds): how long a newly-filed issue-family row is held
- *  back from EVERY agent EXCEPT its filer. Env-overridable; 0 disables the leg entirely.
- *
- *  WHY: filing IS publishing. An agent that files a bug and then starts fixing it without
- *  claiming it first races the whole drain fleet, and the race is decided in seconds — it has
- *  been lost twice in one session by agents who knew the rule. `work_items:create` /
- *  `improvements:capture` both take `assign_to:'self'` (the atomic, zero-window fix, and still
- *  the right one), but nothing protected the filer who does not yet KNOW they will fix it. */
-export function filingGraceSec(): number {
-  const v = Number(process.env.PAPERCUSP_FILING_GRACE_SEC ?? 600);
-  return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 600;
-}
-
 /**
  * THE per-claim cooldown floor for the ISSUE family — one fragment, `wi.`-qualified, shared by
- * every issue-family claim/preview/diagnosis site so they cannot drift apart. Two reasons, ONE
- * floor (WI-5939 is explicit: "extend the EXISTING cooldown floor … do not add a parallel
- * mechanism", and its acceptance names `excludedBreakdown.cooldown`):
+ * every issue-family claim/preview/diagnosis site so they cannot drift apart:
  *
  *   (a) RELEASE cooldown (mig 499 / EI-6956) — THIS caller released the row moments ago, so it
  *       is gated for THIS caller only, long enough to outlast one release→re-pull cycle.
- *   (b) FILING grace (WI-5939) — someone ELSE filed the row moments ago; its filer gets a head
- *       start to claim their own file-then-fix before the pool takes it.
  *
- * Both legs are caller-relative, which is why neither lives in the SQL SSOT
+ * There is NO filing hold. A filer that means to work its own filing claims it in the same call
+ * (`assign_to:'self'` on `work_items:create` / `improvements:capture`: atomic, no window). The
+ * ten-minute hold that used to reserve every new row for its filer (WI-5939) is gone by the
+ * owner's ruling of 2026-11-23: it also held back the members a leader had just filed work FOR,
+ * whose first pull then found nothing they could claim.
+ *
+ * This leg is caller-relative, which is why it does not live in the SQL SSOT
  * (`harness_shared.work_item_claim_floors` takes no claimant and documents itself as the
  * UNCONDITIONAL floors "modulo per-claim rig/swarm/redundancy/cooldown"). Do NOT add this to
  * migration 759's function or the `work_items_claimable` view: that view answers "claimable by
@@ -7110,21 +7099,16 @@ export function filingGraceSec(): number {
  *       per agent, so count = distinct releasers). Bounded twice: new evidence re-admits at
  *       once, and the window ages the releases out. By-id claims never read this fragment.
  *
- * FAIL-OPEN in every unknown: no assignee, no filer recorded, or no `created_ts` all ADMIT the
- * row; an absent or unparsable `evidenceAdvancedAt` counts every in-window release (the epoch
- * is -infinity), never throws. The failure mode being avoided is a permanently unclaimable
- * item nobody can diagnose.
- * The filer's id lives at `payload->'_ei'->>'created_by'` — the base table has no `created_by`
- * column at all; the `engineer_issues` VIEW derives it from that same `_ei` fold (mig 374).
+ * FAIL-OPEN in every unknown: no assignee ADMITS the row; an absent or unparsable
+ * `evidenceAdvancedAt` counts every in-window release (the epoch is -infinity), never throws.
+ * The failure mode being avoided is a permanently unclaimable item nobody can diagnose.
  */
 export function issueCooldownExclusionSql(
   sql: OrgSql,
   assignee: string | undefined,
   cooldownSec: number = releaseCooldownSec(),
-  graceSec: number = filingGraceSec(),
   dampingReleasers: number = releaseDampingReleasers(),
   dampingWindowSec: number = releaseDampingWindowSec(),
-  claimantFleetSlug?: string,
 ) {
   const legacyReleaseLeg =
     assignee && cooldownSec > 0
@@ -7149,58 +7133,6 @@ export function issueCooldownExclusionSql(
         )`
       : sql`TRUE`;
   const releaseLeg = sql`(${legacyReleaseLeg} AND ${sidecarReleaseLeg})`;
-  // An exact outside cohort authored by the CURRENT leader is a handoff of
-  // that leader's released filings to its current, equally bound members.
-  // Ordinary exact-ID fleets retain filing grace. Read live provenance here:
-  // a peer-authored spec, a former leader, another harness or an omitted ID
-  // cannot waive the filer's head start. Other cooldown legs still apply.
-  const filerHandoff = assignee && claimantFleetSlug
-    ? sql`EXISTS (
-        SELECT 1
-          FROM harness_shared.agent_fleets delegated_fleet
-          JOIN harness_shared.cup_claim_specs delegated_spec
-            ON delegated_spec.workspace_id = delegated_fleet.workspace_id
-           AND delegated_spec.bee_id = 'fleet:' || delegated_fleet.fleet_slug
-         WHERE delegated_fleet.workspace_id = wi.workspace_id
-           AND delegated_fleet.fleet_slug = ${claimantFleetSlug}
-           AND delegated_fleet.leader_owner_id = wi.payload -> '_ei' ->> 'created_by'
-           AND delegated_spec.updated_by = delegated_fleet.leader_owner_id
-           AND delegated_spec.harness_slug = wi.harness_slug
-           AND wi.payload ->> 'externalPlanRef' <> ''
-           AND COALESCE(to_jsonb(delegated_fleet) -> 'last_launch_transaction' ->> 'planRef',
-                        to_jsonb(delegated_fleet) -> 'headcount_config' ->> 'planRef') = wi.payload ->> 'externalPlanRef'
-           AND (
-             SELECT delegated_session.outside_plan_ref FROM harness_shared.adv_sessions delegated_session
-              WHERE delegated_session.workspace_id = wi.workspace_id
-                AND delegated_session.coord_owner_id = ${assignee}
-              ORDER BY delegated_session.started_at DESC, delegated_session.id DESC LIMIT 1
-           ) = wi.payload ->> 'externalPlanRef'
-           AND EXISTS (
-             SELECT 1 FROM (
-               SELECT fleet_slug, fleet_role FROM harness_shared.fleet_membership_events
-                WHERE workspace_id = wi.workspace_id AND owner_id = ${assignee}
-                ORDER BY id DESC LIMIT 1
-             ) membership
-              WHERE membership.fleet_slug = delegated_fleet.fleet_slug AND membership.fleet_role = 'member')
-           AND EXISTS (
-             SELECT 1 FROM harness_shared.work_item_release_cooldowns handoff
-              WHERE handoff.workspace_id = wi.workspace_id AND handoff.harness_slug = wi.harness_slug
-                AND handoff.feature_id = wi.feature_id AND handoff.agent_id = delegated_fleet.leader_owner_id
-                AND handoff.released_at >= to_timestamp(wi.created_ts / 1000.0))
-           AND delegated_spec.spec -> 'view' -> 'filter' ->> 'field' = 'id'
-           AND delegated_spec.spec -> 'view' -> 'filter' ->> 'op' = 'in'
-           AND jsonb_typeof(delegated_spec.spec -> 'view' -> 'filter' -> 'value') = 'array'
-           AND (delegated_spec.spec -> 'view' -> 'filter' -> 'value') @> jsonb_build_array(wi.feature_id)
-      )`
-    : sql`FALSE`;
-  const filingGraceLeg =
-    assignee && graceSec > 0
-      ? sql`(wi.payload -> '_ei' ->> 'created_by' IS NULL
-             OR wi.payload -> '_ei' ->> 'created_by' = ${assignee}
-             OR wi.created_ts IS NULL
-             OR to_timestamp(wi.created_ts / 1000.0) < now() - make_interval(secs => ${graceSec})
-             OR ${filerHandoff})`
-      : sql`TRUE`;
   // (c) Item-level, so it applies with or without an assignee.
   const dampingLeg =
     dampingReleasers > 0 && dampingWindowSec > 0
@@ -7216,7 +7148,7 @@ export function issueCooldownExclusionSql(
                       '-infinity'::timestamptz)
             ) < ${dampingReleasers}`
       : sql`TRUE`;
-  return sql`(${releaseLeg} AND ${filingGraceLeg} AND ${dampingLeg})`;
+  return sql`(${releaseLeg} AND ${dampingLeg})`;
 }
 
 /**
@@ -9628,10 +9560,9 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- proving a phantom needs no action. The shared fragment fails OPEN on incomplete
          -- history and is deliberately issue-family-only.
          AND ${watchdogRecoveryWindowExclusionSql(sql)}
-         -- Mig 499 + WI-5939: a row cooling down FOR THIS CALLER — either this caller released it
-         -- recently, or someone else filed it within the filing-grace window — is likewise
-         -- pending-but-gated here; same one fragment claimNextIssueWorkItem applies.
-         AND ${issueCooldownExclusionSql(sql, filter.assignee, issueCooldown, undefined, undefined, undefined, filter.claimantFleetSlug)}`;
+         -- Mig 499: a row cooling down FOR THIS CALLER — this caller released it recently — is
+         -- likewise pending-but-gated here; same one fragment claimNextIssueWorkItem applies.
+         AND ${issueCooldownExclusionSql(sql, filter.assignee, issueCooldown)}`;
     readyUnclaimed += issueReadyRows[0]?.n ?? 0;
   }
 
@@ -9800,10 +9731,9 @@ export const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
     "a true-peer federated row (origin not local/null, and not one of this workspace's own " +
     'substrate-log author keys) — not self-selectable from this node (isIssueLocallyClaimableWhereSql)',
   cooldown:
-    'cooling down FOR THIS CALLER — either released by THIS caller within the release-cooldown window ' +
-    '(mig 499 / EI-6956), or FILED BY SOMEONE ELSE within the filing-grace window (WI-5939: the filer ' +
-    'gets a head start to claim their own file-then-fix). Both clear on their own; the filer can claim ' +
-    'its own row immediately, and PAPERCUSP_FILING_GRACE_SEC=0 disables the grace leg.',
+    'cooling down FOR THIS CALLER — released by THIS caller within the release-cooldown window ' +
+    '(mig 499 / EI-6956), or released by several agents in a row with no new evidence (release damping). ' +
+    'Both clear on their own.',
   'live-gate-ops': liveGateOpsSelfSelectExplanation(),
   // EI-22172757071586188: the 4th floor (after WI-37356's ok_no_blocker/ok_cooldown/ok_origin)
   // found missing from this oracle. Generic on purpose — unlike stopTheLineExplanation(harness),
@@ -9884,7 +9814,7 @@ export function issueClaimBarFloorColumnsSql(
     (${watchdogRecoveryWindowExclusionSql(sql)})                           AS ok_watchdog_recovery,
     (${crossMachineRigExclusionSql(sql, rigAvailable)})                    AS ok_rig,
     (${depsBlockedExclusionSql(sql)})                                      AS ok_no_blocker,
-    (${issueCooldownExclusionSql(sql, assignee, cooldown, undefined, undefined, undefined, claimantFleetSlug)}) AS ok_cooldown,
+    (${issueCooldownExclusionSql(sql, assignee, cooldown)}) AS ok_cooldown,
     (${stopTheLineExclusionSql(sql, 'issue-wi')})                          AS ok_stop_line
   `;
 }
@@ -10528,10 +10458,10 @@ export async function claimNextIssueWorkItem(
           AND ${watchdogRecoveryWindowExclusionSql(tx)}
           -- Mig 499 + WI-5939: the per-claim cooldown floor (issueCooldownExclusionSql) — the
           -- SAME fragment the preview (get-next), the miss diagnosis and the per-id explainer
-          -- apply, so the claim door and every read of it can no longer disagree. NULL-safe in
-          -- both legs: only "released by ME within the release window" or "filed by SOMEONE
-          -- ELSE within the filing-grace window" excludes the row from MY OWN self-select.
-          AND ${issueCooldownExclusionSql(tx, filter.assignee, cooldown, undefined, undefined, undefined, filter.claimantFleetSlug)}
+          -- apply, so the claim door and every read of it can no longer disagree. NULL-safe:
+          -- only "released by ME within the release window" (or release damping) excludes the
+          -- row from MY OWN self-select.
+          AND ${issueCooldownExclusionSql(tx, filter.assignee, cooldown)}
         -- EI-7407: feature_order steering must be UNCONDITIONAL for issue-family claims (per
         -- this function's own doc above — "the Mug can now steer issues too, P-007" — with
         -- no swarmId/Multi-Swarm-lease caveat, unlike the feature-family path's P-010-gated
