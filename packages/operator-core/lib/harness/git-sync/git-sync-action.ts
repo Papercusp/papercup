@@ -904,6 +904,16 @@ function configFromTrigger(triggerConfig: Record<string, unknown>): ActionTrigge
         typeof triggerConfig.pushSubmoduleOrigins === 'boolean' ? triggerConfig.pushSubmoduleOrigins : undefined,
       branch: typeof triggerConfig.branch === 'string' ? triggerConfig.branch : undefined,
       remote: typeof triggerConfig.remote === 'string' ? triggerConfig.remote : undefined,
+      // `reconcile_origin: false` leaves the remote out of the pass: nothing is fetched
+      // or merged from it. Any other value keeps the default (reconcile), so a typo
+      // cannot switch the reconcile off.
+      reconcileSuperprojectOrigin: triggerConfig.reconcile_origin === false ? false : undefined,
+      // The commit subject, in place of the default (which ends in `[skip ci]`). A
+      // project whose host runs its pipelines on these commits sets one without it.
+      message:
+        typeof triggerConfig.message === 'string' && triggerConfig.message.trim().length > 0
+          ? triggerConfig.message.trim()
+          : undefined,
       maxBlobBytes: typeof triggerConfig.max_blob_bytes === 'number' ? triggerConfig.max_blob_bytes : undefined,
       maxCommitTotalBytes:
         typeof triggerConfig.max_commit_total_bytes === 'number' ? triggerConfig.max_commit_total_bytes : undefined,
@@ -9111,11 +9121,38 @@ async function recordAndEscalateTick(a: {
  * stale tree when git-sync is lagging/wedged — WI-1320). Reads the routine's own
  * trigger_config so it behaves exactly like a tick; default config when the row is absent.
  */
+/** What one on-demand fire may change about the routine's own settings. */
+export interface GitSyncFireOverrides {
+  /** Commit what is in the checkout and stop: nothing fetched or merged from the
+   *  remote, nothing pushed, submodules left alone. For a checkout whose remote
+   *  another system owns. */
+  commitOnly?: boolean;
+  /** The commit subject for this fire, in place of the routine's (or the default,
+   *  which ends in `[skip ci]`). */
+  message?: string;
+}
+
+/** The trigger settings one on-demand fire runs with: the routine's, under the
+ *  caller's overrides. Pure, so the mapping is tested without a routine row. */
+export function gitSyncFireTriggerConfig(
+  triggerConfig: Record<string, unknown>,
+  overrides: GitSyncFireOverrides = {},
+): Record<string, unknown> {
+  return {
+    ...triggerConfig,
+    ...(overrides.commitOnly === true
+      ? { push: false, push_submodules: false, pushSubmoduleOrigins: false, reconcile_origin: false }
+      : {}),
+    ...(overrides.message !== undefined ? { message: overrides.message } : {}),
+  };
+}
+
 export async function fireGitSyncNow(
   installSlug: string,
   workspaceId: string,
   repoPath?: string | null,
   repairMetadata?: GitSyncMetadataRepairRequest,
+  overrides?: GitSyncFireOverrides,
 ): Promise<GitSyncFireOutcome> {
   // WI-10000734: this is the shared ON-DEMAND seam used by both git-sync:run
   // and release:deploy. A request-only host can intentionally serve an older
@@ -9136,7 +9173,7 @@ export async function fireGitSyncNow(
     SELECT trigger_config FROM harness_shared.routines
      WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug} AND name = 'git-sync'
      LIMIT 1`) as Array<{ trigger_config: Record<string, unknown> | null }>;
-  const triggerConfig = rows[0]?.trigger_config ?? {};
+  const triggerConfig = gitSyncFireTriggerConfig(rows[0]?.trigger_config ?? {}, overrides);
   return handleGitSync({ installSlug, workspaceId, triggerConfig, payloadTemplate: null }, repoPath);
 }
 

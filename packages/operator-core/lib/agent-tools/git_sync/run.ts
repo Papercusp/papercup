@@ -306,6 +306,17 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Preview the selected checkout without firing git-sync, committing, or pushing.'),
+    commitOnly: z
+      .boolean()
+      .optional()
+      .describe('Commit what is in the checkout and stop: nothing fetched or merged from the remote, nothing pushed, submodules left alone. For a checkout whose remote another system owns.'),
+    message: z
+      .string()
+      .min(1)
+      .max(200)
+      .regex(/^[^\r\n]+$/, 'one line')
+      .optional()
+      .describe('Commit subject for this run, in place of the default (which ends in `[skip ci]`).'),
     repairMetadata: gitSyncMetadataRepairRequestSchema.optional().describe(
       'Resolve selected parent metadata privately and publish through existing custody. Optional publishedLibrarySelections is a sorted, unique closed library vector (at most two); absent retains root-only v1, explicit [] selects v2. Pending lock null means observed absence. Mutation requires an explicit exact background target; no caller-supplied path or bytes are accepted.',
     ),
@@ -327,6 +338,9 @@ export default defineTool({
     const slug = args.installSlug ?? args.harness ?? operatorHomeHarnessSlug();
     const workspaceId = activeWorkspaceId();
     const repairMetadata = args.repairMetadata ? snapshotGitSyncMetadataRepairRequest(args.repairMetadata) : undefined;
+    if (repairMetadata && (args.commitOnly === true || args.message !== undefined)) {
+      throw new Error('git-sync:run: commitOnly and message apply to an ordinary run, not to repairMetadata');
+    }
 
     if (repairMetadata && !args.dryRun && !args.target) return { content: [{ type: 'text', text: JSON.stringify({
       ok: false, fired: false, status: 'refused', reason: 'metadata-repair-target-required',
@@ -421,10 +435,21 @@ export default defineTool({
     const before = repoDir ? await headSha(repoDir) : null;
 
     const syncRequestedAtMs = Date.now();
+    // Only a fire that changes the routine's settings carries the fifth argument, so
+    // every other caller's call is what it was.
+    const overrides =
+      args.commitOnly === true || args.message !== undefined
+        ? {
+            ...(args.commitOnly === true ? { commitOnly: true } : {}),
+            ...(args.message !== undefined ? { message: args.message } : {}),
+          }
+        : undefined;
     const fired = await withBoundedTimeout<GitSyncFireOutcome | undefined>(
       () => repairMetadata
         ? fireGitSyncNow(slug, workspaceId, repoDir, repairMetadata)
-        : fireGitSyncNow(slug, workspaceId, repoDir),
+        : overrides
+          ? fireGitSyncNow(slug, workspaceId, repoDir, undefined, overrides)
+          : fireGitSyncNow(slug, workspaceId, repoDir),
       {
         fallback: undefined,
         timeoutMs: GIT_SYNC_RUN_BUDGET_MS,

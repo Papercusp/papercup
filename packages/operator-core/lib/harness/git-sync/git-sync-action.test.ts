@@ -732,6 +732,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 import './git-sync-action';
 import {
   fireGitSyncNow,
+  gitSyncFireTriggerConfig,
   isResolverInFlight,
   acquireWithContentionRetry,
   GitSyncActionTimeoutError,
@@ -1370,6 +1371,52 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     const result = await fireGitSyncNow(ctx.installSlug, ctx.workspaceId);
 
     expect(result).toMatchObject({ status: 'synced', headSha: syncedOutcome.headSha, pushed: syncedOutcome.pushed });
+  });
+
+  it('an on-demand commit-only fire leaves the remote and the submodules out, under the subject it was given', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await fireGitSyncNow(ctx.installSlug, ctx.workspaceId, undefined, undefined, {
+      commitOnly: true,
+      message: 'chore: work in progress',
+    });
+
+    expect(runGitSyncMock).toHaveBeenCalledWith(ctx.installSlug, expect.objectContaining({
+      config: expect.objectContaining({
+        push: false,
+        pushSubmodules: false,
+        pushSubmoduleOrigins: false,
+        reconcileSuperprojectOrigin: false,
+        message: 'chore: work in progress',
+      }),
+    }));
+  });
+
+  it('an on-demand fire with no overrides runs with the routine\'s own settings', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await fireGitSyncNow(ctx.installSlug, ctx.workspaceId);
+
+    const config = (runGitSyncMock.mock.calls.at(-1)?.[1] as { config: Record<string, unknown> }).config;
+    // Reconciling with the remote stays the default, and so does the default subject.
+    expect(config.reconcileSuperprojectOrigin).toBeUndefined();
+    expect(config.message).toBeUndefined();
+  });
+
+  it('maps a fire\'s overrides onto trigger settings: commit-only switches every remote leg off, and only a literal false leaves the reconcile out', () => {
+    expect(gitSyncFireTriggerConfig({ cron: '0 * * * * *', push: true })).toEqual({ cron: '0 * * * * *', push: true });
+    expect(gitSyncFireTriggerConfig({ push: true, branch: 'staging' }, { commitOnly: true })).toEqual({
+      push: false,
+      push_submodules: false,
+      pushSubmoduleOrigins: false,
+      reconcile_origin: false,
+      branch: 'staging',
+    });
+    expect(gitSyncFireTriggerConfig({ message: 'the routine\'s own' }, { message: 'this fire\'s' })).toEqual({
+      message: 'this fire\'s',
+    });
+    // `commitOnly: false` is not an instruction to push.
+    expect(gitSyncFireTriggerConfig({ push: false }, { commitOnly: false })).toEqual({ push: false });
   });
 
   const repairMetadata = { base: 'a'.repeat(40), expectedPendingLockSha256: 'b'.repeat(64),

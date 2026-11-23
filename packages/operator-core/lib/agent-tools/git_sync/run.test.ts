@@ -320,6 +320,25 @@ describe('git-sync:run', () => {
     expect(parse(result as never)).toMatchObject({ ok: true, fired: true, slug: 'papercusp', committed: false });
   });
 
+  it('hands a commit-only run and its subject to the fire, and refuses them beside a metadata repair', async () => {
+    const fireSpy = vi.fn(async () => undefined);
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'operator-home' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: fireSpy }));
+
+    const { default: tool } = await import('./run');
+    await tool.handler({ harness: 'a-project', commitOnly: true, message: 'chore: work in progress' }, MAKE_CTX());
+
+    expect(fireSpy).toHaveBeenCalledExactlyOnceWith('a-project', 'default', null, undefined, {
+      commitOnly: true,
+      message: 'chore: work in progress',
+    });
+    // A subject is one line: the commit's body is git-sync's own.
+    expect(tool.args.safeParse({ message: 'two\nlines' }).success).toBe(false);
+    expect(tool.args.safeParse({ commitOnly: true, message: 'one line' }).success).toBe(true);
+  });
+
   it('accepts the standard harness scope spelling as an alias for installSlug', async () => {
     const fireSpy = vi.fn(async () => undefined);
     vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'operator-home' }));
