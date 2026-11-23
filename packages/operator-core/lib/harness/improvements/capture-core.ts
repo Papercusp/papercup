@@ -50,6 +50,7 @@ import { acquireWithContentionRetry, isWorkspaceContended } from '../../agent-to
 import { isRetriablePgConnectError } from '../../pg-transient-retry';
 import type { DedupCandidateStamp } from '../../agent-tools/work_items/dedup-candidates-stamp';
 import type { AdmissionBypassReason } from '../../work-items-admission';
+import { projectScreeningExemption } from '../../work-items-duplicate-screening';
 import { FLAGS } from '@papercusp/flags';
 import {
   normalizeSuspectedToolFailure,
@@ -3900,6 +3901,16 @@ export async function captureImprovement(
           : input.assignee?.trim()
             ? 'bypass:explicit-assignment'
             : null;
+  // The project's own screening level, after the filing-time bypasses and never for a
+  // review-required proposal, which keeps its stronger fence (work-items-duplicate-screening).
+  const screeningExemption =
+    isObservation || reviewRequired || admissionBypass
+      ? null
+      : await projectScreeningExemption(
+          input.workspaceId,
+          harnessFromScope(input.scope),
+          isObservation ? 'change' : storageKindOf(input.kind),
+        );
   const createInput: CreateIssueInput = {
     ...(input.artifactId ? { id: input.artifactId } : {}),
     title: input.title,
@@ -3920,8 +3931,8 @@ export async function captureImprovement(
     // NULL remains readable for old rows, but new work never depends on it.
     ...(!isObservation
       ? {
-          admission: admissionBypass ? ('auto' as const) : ('pending' as const),
-          ...(admissionBypass ? { admittedBy: admissionBypass } : {}),
+          admission: admissionBypass || screeningExemption ? ('auto' as const) : ('pending' as const),
+          ...(admissionBypass || screeningExemption ? { admittedBy: admissionBypass ?? screeningExemption ?? undefined } : {}),
         }
       : {}),
     // D-002/D-005 (observation-lane-scorecard-classification-2026-08-16): a

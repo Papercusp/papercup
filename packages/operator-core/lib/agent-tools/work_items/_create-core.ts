@@ -33,6 +33,7 @@ import { persistDedupEdges } from './dedup-edges';
 import type { DedupCandidateStamp } from './dedup-candidates-stamp';
 import { resolvePotScope, POT_REQUIRED_DETAIL } from '../_pot-scope';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
+import { projectScreeningExemption } from '../../work-items-duplicate-screening';
 import { getOrgPg } from '@papercusp/db-org';
 import { WorkItemDefinitionSchema, type WorkItemDefinition } from '../../work-item-definition';
 import { canonicalizeAssigneeOwnerId } from '../../work-item-holder-identity';
@@ -1349,7 +1350,15 @@ async function createOneWorkItemCore(
             : args.assign_to?.trim()
               ? 'bypass:explicit-assignment'
               : args.admissionBypass ?? null;
-    const bornAdmission: 'pending' | 'auto' = admissionBypass ? 'auto' : 'pending';
+    // The PROJECT's own screening level comes after the filing-time bypasses: a project that
+    // screens only bugs, or nothing, admits the rest at birth (work-items-duplicate-screening).
+    // It is a policy of the project, not something this filer did, so it is recorded under
+    // `policy:` and is not one of ADMISSION_CREATE_BYPASSES, which a refused claimant is shown
+    // as things IT can do. An unreadable or unregistered project screens everything.
+    const screeningExemption = admissionBypass
+      ? null
+      : await projectScreeningExemption(workspaceId, harnessForItem ?? ctx.harnessSlug, args.kind);
+    const bornAdmission: 'pending' | 'auto' = admissionBypass || screeningExemption ? 'auto' : 'pending';
     let workItem = await createWorkItem({
       kind: args.kind as WorkItemKind,
       title: args.title,
@@ -1379,7 +1388,7 @@ async function createOneWorkItemCore(
       // P-002: rides in the INSERT for both families — never a post-create UPDATE,
       // which would leave the row admitted and claimable in the gap between writes.
       admission: bornAdmission,
-      admittedBy: admissionBypass,
+      admittedBy: admissionBypass ?? screeningExemption,
     });
     // WI-39604: claim the condition key for the fresh mint. A lost race means a
     // concurrent filer's row is the incumbent: this reading is refreshed onto the

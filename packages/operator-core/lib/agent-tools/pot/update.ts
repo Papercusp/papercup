@@ -15,6 +15,7 @@ import { DeploymentConfigSchema } from '../../deployment/config-schema';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../../harness-registry';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { isPotProject, resolvePot } from './_resolve';
+import { duplicateScreeningComplaint } from '../../work-items-duplicate-screening';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -58,6 +59,10 @@ export default defineTool({
     }
     if (args.deployment === undefined && args.configOverrides === undefined) {
       return text({ ok: false, error: 'nothing_to_update', message: 'Pass `deployment` and/or `configOverrides`.' });
+    }
+    const screeningComplaint = args.configOverrides ? duplicateScreeningComplaint(args.configOverrides) : null;
+    if (screeningComplaint) {
+      return text({ ok: false, error: 'invalid_duplicate_screening', message: screeningComplaint });
     }
 
     const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);

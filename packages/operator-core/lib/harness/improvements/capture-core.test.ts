@@ -30,6 +30,18 @@ afterEach(() => {
 });
 
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+// The project registry the duplicate-screening level is read from: one project that screens
+// nothing, one that screens only bugs. Every other project reads as the default, `all`.
+const SCREENING_REGISTRY = vi.hoisted(() => ({
+  projects: [
+    { slug: 'small', path: '/p/small', configOverrides: { duplicateScreening: 'off' } },
+    { slug: 'bugsonly', path: '/p/bugsonly', configOverrides: { duplicateScreening: 'bugs' } },
+  ],
+}));
+vi.mock('../../harness-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness-registry')>()),
+  loadHarnessRegistry: vi.fn(async () => SCREENING_REGISTRY),
+}));
 vi.mock('../../agent-tools/work_items/recent-lexical-dupe-guard', () => ({
   findRecentLexicalDupes: vi.fn(async () => null),
 }));
@@ -648,6 +660,17 @@ describe('captureImprovement — born admission for captured work', () => {
     const d = deps();
     await captureImprovement({ title: `urgent capture ${reason}`, kind: 'bug', ...override }, d);
     expect(d.created[0]).toMatchObject({ admission: 'auto', admittedBy: reason });
+  });
+
+  it('admits a captured bug at birth in a project that screens nothing, and holds it where only bugs are screened', async () => {
+    const off = deps();
+    await captureImprovement({ title: 'bug in a small project', kind: 'bug', scope: 'harness:small' }, off);
+    expect(off.created[0]).toMatchObject({ admission: 'auto', admittedBy: 'policy:duplicate-screening-off' });
+
+    const bugs = deps();
+    await captureImprovement({ title: 'bug in a bugs-only project', kind: 'bug', scope: 'harness:bugsonly' }, bugs);
+    expect(bugs.created[0]).toMatchObject({ admission: 'pending' });
+    expect(bugs.created[0].admittedBy).toBeUndefined();
   });
 
   it('keeps observations outside admission and non-reviewed change captures pending', async () => {

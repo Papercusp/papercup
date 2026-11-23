@@ -25,6 +25,7 @@ import { loadHarnessRegistry, saveHarnessRegistry, type ProjectEntry } from '../
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { instanceEntryToConfig } from '../../deployment/instance-config';
 import { POT_KIND } from '../pot/_resolve';
+import { duplicateScreeningComplaint } from '../../work-items-duplicate-screening';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -67,6 +68,10 @@ export default defineTool({
     }
     if (Object.keys(args.configOverrides).length === 0) {
       return text({ ok: false, error: 'nothing_to_update', message: 'Pass at least one key in `configOverrides`.' });
+    }
+    const screeningComplaint = duplicateScreeningComplaint(args.configOverrides);
+    if (screeningComplaint) {
+      return text({ ok: false, error: 'invalid_duplicate_screening', message: screeningComplaint });
     }
 
     const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
