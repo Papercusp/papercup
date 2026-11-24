@@ -1438,6 +1438,12 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   if (outsidePlan && (input.planSlug || hostManagedWorkflow)) {
     throw new Error('An outside plan reference requires work-item registration and excludes a Papercusp plan binding.');
   }
+  // A fleet MEMBER bound to an outside plan is not an interactive su with a posture on top: it
+  // builds another system's work with a handful of tools and nobody to ask. Its prompt is
+  // composed from that identity's own base and work loop (`composeSuStackSource({ outsideMember })`),
+  // with none of su.md, the client overlay, the generated su sections, the project guide or
+  // the hive's su override, each of which describes a session this one is not.
+  const outsideMember = outsidePlan && (input.fleetRole ?? '').trim().toLowerCase() === 'member';
 
   // 1. cwd — the harness project dir if scoped, else the workspace root.
   //    Matches console-launcher's superuser shell: a *given* slug must
@@ -1557,14 +1563,16 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
         try {
           // Loaded lazily, like the flags above: the blueprint barrel pulls the loader (and its
           // harness-path resolution) which this module otherwise never needs at import time.
-          const { composeSuStackSource, isSuTilingError, normalizeStackBinding, slotSpec, SU_SOURCE_REL, SU_STATIC_LAYERS, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
+          const { composeSuStackSource, isSuTilingError, normalizeStackBinding, slotSpec, SU_OUTSIDE_MEMBER_BASE, SU_SOURCE_REL, SU_STATIC_LAYERS, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
           const { getIdentitySource, readSelectedIdentityDocument } = await import('./agent-identities/source');
           const harnessDir = path.resolve(suBaseSource, '..', '..', '..', '..'); // <root>/blueprints/base/prompts/su.md
           // P-012 / P-021: the launch-time stack binding — the fleet posture the session
           // launches into and the definition identity of each mode it launches with — is
           // part of the FIRST render (an inject-now layer also renders in place on every
           // full render). Derived from the same facts presence + agent_modes carry.
-          const derived = suSessionBinding({ fleetRole: input.fleetRole, modes: input.modes, outsidePlan }, modeCatalog);
+          // An outside member renders no mode-axis document: those are the owner's switches, and
+          // it has no owner. Its mode STATE stays in the registry, where the gates read it.
+          const derived = suSessionBinding({ fleetRole: input.fleetRole, modes: outsideMember ? [] : input.modes, outsidePlan }, modeCatalog);
           const launchBinding = normalizeStackBinding([...requestedStack.layers, ...derived.layers]);
           const selectedLayerDocs = new Map<string, import('@papercusp/orchestrator/blueprint').StackDocument>();
           for (const layer of requestedStack.layers) {
@@ -1606,6 +1614,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
             harnessDir: dir,
             binding: launchBinding,
             outsidePlan,
+            outsideMember,
             workItemWorkflow: hostManagedWorkflow ? 'host-managed' : undefined,
             resolveLayer: (layer) => selectedLayerDocs.get(`${layer.slot}:${layer.id}`) ?? null,
           }).text;
@@ -1625,10 +1634,13 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
             suBaseText = composeFrom(buildDir);
             suBaseSource = path.join(buildDir, SU_SOURCE_REL);
           }
+          // What the artifact records as rendered: an outside member's composition has none of
+          // the su's static layers, and its source is its own base document, not su.md.
           impliedStack = [
-            ...SU_STATIC_LAYERS.map((layer) => `${layer.slot}:${layer.id}`),
+            ...(outsideMember ? [] : SU_STATIC_LAYERS.map((layer) => `${layer.slot}:${layer.id}`)),
             ...derived.layers.map((layer) => `${layer.slot}:${layer.id}`),
           ];
+          if (outsideMember) suBaseSource = path.join(harnessDir, SU_OUTSIDE_MEMBER_BASE.path);
         } catch (e) {
           if (modeCatalog || requestedStack.layers.length > 0 || hostManagedWorkflow || outsidePlan) throw e;
           console.warn(`[role-launch-spec] su slot-stack compose failed — rendering su.md unsealed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1652,7 +1664,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   // default is today's playbook, byte-identical.
   const { modelWindowForSpec } = await import('./agent-config-constants');
   const personaTier: 'full' | 'fleet' =
-    input.personaTier ?? (input.model && modelWindowForSpec(input.model) <= 200_000 ? 'fleet' : 'full');
+    input.personaTier ?? (outsideMember || (input.model && modelWindowForSpec(input.model) <= 200_000) ? 'fleet' : 'full');
   // identities-v1 P-022: the Project guide is selected by the WEARER'S STACK, not by
   // harness alone. The wearer is the same binding the first render composes from —
   // the su static layers (domain / stance / practice) + the session binding (fleet
@@ -1666,7 +1678,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   // (PAPERCUSP_HARNESS_SLUG, default 'papercusp'); the POWER profile's guide is the
   // managed repo's, so its parts live under that harness.
   const composeProjectGuide = await (async () => {
-    if (!ambientContextAllowed || launchProfile === 'generic') return undefined;
+    if (!ambientContextAllowed || launchProfile === 'generic' || outsideMember) return undefined;
     try {
       const bp = await import('@papercusp/orchestrator/blueprint');
       const { guideHarnessForLaunchProfile, projectGuideComposerForWearer, suGuideWearer } = await import(
@@ -1694,17 +1706,24 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
       return undefined;
     }
   })();
-  const rendered = await renderSuPlaybook({
-    agent: input.agent,
-    profile: input.profile,
-    operatorAppRoot: input.operatorAppRoot,
-    tier: personaTier,
-    projectGuideSource,
-    baseSource: suBaseSource,
-    baseText: suBaseText,
-    overlayDir: suOverlayDir,
-    composeProjectGuide,
-  });
+  // An outside member's composed source IS its persona: `renderSuPlaybook` would append the
+  // client's su tooling overlay to a base that carries no seam for it, and has nothing else to
+  // splice into a source with none of the su's markers.
+  if (outsideMember && (!suBaseText || !suBaseSource))
+    throw new Error('An outside fleet member requires its composed base; an unfiltered su fallback is refused.');
+  const rendered: Awaited<ReturnType<typeof renderSuPlaybook>> = outsideMember
+    ? { text: suBaseText!, baseSource: suBaseSource!, overlaySource: '', projectGuideSource: '', projectGuideAddressed: null }
+    : await renderSuPlaybook({
+        agent: input.agent,
+        profile: input.profile,
+        operatorAppRoot: input.operatorAppRoot,
+        tier: personaTier,
+        projectGuideSource,
+        baseSource: suBaseSource,
+        baseText: suBaseText,
+        overlayDir: suOverlayDir,
+        composeProjectGuide,
+      });
   if (rendered.projectGuideAddressed) {
     const a = rendered.projectGuideAddressed;
     console.log(
@@ -1718,7 +1737,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   // stored in the federated hive_settings layer (same as the harness-role path, P-003).
   // Best-effort; flag-off (suBaseSource undefined) or no hive ⇒ skipped (byte-identical).
   let suPersonaText = rendered.text;
-  if (ambientContextAllowed && suBaseSource && harnessSlug) {
+  if (ambientContextAllowed && suBaseSource && harnessSlug && !outsideMember) {
     try {
       const { potHomeSlugForHarness } = await import('./hive-federation');
       const { getHiveInstancePromptOverride, setHiveInstancePromptOverride } = await import('./hive-settings-store');

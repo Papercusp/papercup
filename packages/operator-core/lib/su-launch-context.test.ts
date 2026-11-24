@@ -13,6 +13,20 @@ describe('composeLaunchContext', () => {
     expect(out).toContain('Hold a work-item');
     expect(out).not.toMatch(/plans:(?:new|start|get)/);
   });
+  it('tells an outside fleet member its project and nothing of the su brief', () => {
+    const leader = composeLaunchContext({ harnessSlug: 'outside-app', planSlug: null, outsidePlan: true, fleetRole: 'leader' });
+    const member = composeLaunchContext({ harnessSlug: 'outside-app', planSlug: null, outsidePlan: true, fleetRole: 'member' });
+    // Positive control: the same launch as a leader carries the su brief.
+    for (const suOnly of ['coord:whoami', 'cross_harness:', 'npm run test:file', 'Tauri', '`staging`', 'docs:*']) {
+      expect(leader).toContain(suOnly);
+      expect(member).not.toContain(suOnly);
+    }
+    expect(member).toContain("`outside-app`. Pass `harness: 'outside-app'` where a tool asks for one.");
+    expect(member).toContain('there is no Papercusp plan to read or write');
+    expect(member.endsWith('\n')).toBe(true);
+    expect(composeLaunchContext({ harnessSlug: null, planSlug: null, outsidePlan: true, fleetRole: 'Member ' }))
+      .toContain('none was named for this launch');
+  });
   it('returns empty when neither harness nor plan is picked (ad-hoc launch)', () => {
     expect(composeLaunchContext({ harnessSlug: null, planSlug: null })).toBe('');
   });

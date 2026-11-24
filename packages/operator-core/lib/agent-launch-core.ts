@@ -1342,8 +1342,33 @@ export function renderGoalFleetAllocation(opts: {
   ].join('\n');
 }
 
+/**
+ * The launch context of a fleet member bound to an OUTSIDE plan of record: where it is, and its
+ * leader's brief. Nothing of the member baseline, the GOAL allocation or the lineage guard: those
+ * speak to a member of one of Papercusp's own fleets, which keeps itself running with `loop:arm`,
+ * sets blockers and priorities, searches the tool catalog, edits the staging tree, checkpoints
+ * and reflects, and may be asked to grade. A member bound to an outside plan has a prompt of its
+ * own (`su.outside-fleet-member`) and none of those tools; told to arm a loop it cannot arm, one
+ * kept its turn open and held its fleet's commits back. Pure + exported for tests.
+ */
+export function renderOutsideMemberLaunchContext(opts: {
+  fleetSlug: string;
+  count: number;
+  customBriefText?: string | null;
+}): string {
+  const brief = opts.customBriefText?.trim();
+  const lines = [
+    '# Fleet member on an outside assignment: this launch',
+    '',
+    `You are one of ${opts.count} member${opts.count === 1 ? '' : 's'} of fleet \`${opts.fleetSlug}\`, building work an outside system planned.`,
+  ];
+  if (brief) lines.push('', '## The brief for this fleet', '', brief);
+  return `${lines.join('\n')}\n`;
+}
+
 /** Compose a member's launch context = the universal baseline + (optionally) the
- *  leader's per-fleet brief BELOW it (the brief wins on fleet-specifics). Pure +
+ *  leader's per-fleet brief BELOW it (the brief wins on fleet-specifics). A member bound
+ *  to an outside plan gets `renderOutsideMemberLaunchContext` instead. Pure +
  *  exported for tests. */
 export function composeMemberLaunchContext(opts: {
   fleetSlug: string;
@@ -1353,7 +1378,10 @@ export function composeMemberLaunchContext(opts: {
   carry?: 'warm' | 'cold';
   customBriefText?: string | null;
   goalAllocation?: { goalId: string; intendedParallelPlanFleets: number | null } | null;
+  /** The launch is bound to an outside plan reference (`planRef`). */
+  outsidePlan?: boolean;
 }): string {
+  if (opts.outsidePlan) return renderOutsideMemberLaunchContext(opts);
   const baseline = renderMemberBaseline(opts);
   const brief = opts.customBriefText?.trim();
   const composed = brief

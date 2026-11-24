@@ -49,6 +49,20 @@ export interface LaunchContextInput {
 export function composeLaunchContext(input: LaunchContextInput): string {
   const { harnessSlug, planSlug, planTitle, planNow } = input;
   if (!harnessSlug && !planSlug && !input.outsidePlan) return '';
+  // A fleet member bound to an outside plan has a prompt of its own (`su.outside-fleet-member`),
+  // a handful of tools and a repository that is not Papercusp's. The su's brief would send it to
+  // tools it does not have (`docs:*`, `plans:*`, `coord:whoami`) and to Papercusp's own test
+  // router, desktop shell and staging branch. It is told the one thing a launch adds: its project.
+  if (input.outsidePlan && (input.fleetRole ?? '').trim().toLowerCase() === 'member') {
+    return [
+      '# Operating brief — this launch',
+      '',
+      harnessSlug
+        ? `- **Project:** \`${harnessSlug}\`. Pass \`harness: '${harnessSlug}'\` where a tool asks for one.`
+        : '- **Project:** none was named for this launch.',
+      '- **Plan of record:** the outside system\'s. Your fleet\'s work-items carry its reference; there is no Papercusp plan to read or write.',
+    ].join('\n') + '\n';
+  }
 
   const lines: string[] = [
     '# Operating brief — this launch',

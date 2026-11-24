@@ -91,6 +91,7 @@ vi.mock('./papercusp-root', async (importOriginal) => ({
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // P012: model/account defaults belong to the workspace, while selected
 // identities supply portable policy, prompts and resource contributions.
@@ -1511,6 +1512,40 @@ describe('buildLaunchSpec — kind dispatch', () => {
     expect(spec.promptText).toContain('papercup');
     expect(spec.promptText).toContain('my-plan');
     expect(spec.instructionLint).toMatchObject({ markerCount: 4, clean: true });
+  });
+
+  it("kind:'su' outside fleet member: its own base and work loop, and nothing of the su playbook, overlay or brief", async () => {
+    // The real harness tree: the member's two documents are read from it, as su.md is for an su.
+    const harness = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'libs', 'papercusp', 'packages', 'harness');
+    const suSource = [join(harness, 'blueprints', 'base', 'prompts', 'su.md')];
+    resolvePromptFilesMock.mockReturnValueOnce(suSource);
+    const spec = await buildLaunchSpec({
+      kind: 'su', agent: 'claude', workspaceId: 'default', operatorBaseUrl: 'http://localhost:3070',
+      harnessSlug: 'papercup', planRef: 'OUT-1', fleetRole: 'member',
+    });
+    // Composed, not rendered through the su playbook: no client overlay is appended, no su section spliced.
+    expect(renderSuPlaybookMock).not.toHaveBeenCalled();
+    expect(spec.promptText).toContain('# Fleet member on an outside assignment: the base');
+    expect(spec.promptText).toContain('## Working as a fleet member on an outside assignment');
+    expect(spec.promptText).toContain("`papercup`. Pass `harness: 'papercup'` where a tool asks for one.");
+    for (const suOnly of ['SU PLAYBOOK BODY', 'Superuser engineer-collaborator', '## Engineering discipline',
+      'npm run test:file', 'Tauri', 'cross_harness:', 'coord:whoami', 'tools:find', 'loop:arm', 'work_items:create']) {
+      expect(spec.promptText).not.toContain(suOnly);
+    }
+    expect(spec.promptText.length).toBeLessThan(10_000);
+    // The artifact records what was rendered: the member's posture, none of the su's static layers.
+    expect(spec.impliedStack).toEqual(['fleet-posture:su.outside-fleet-member']);
+    expect(spec.promptFile).toBe(join(harness, 'blueprints', 'su.outside-fleet-member', 'prompts', 'kernel.md'));
+    expect(spec.personaTier).toBe('fleet');
+
+    // The leader of the same assignment is still an su: its prompt goes through the playbook.
+    resolvePromptFilesMock.mockReturnValueOnce(suSource);
+    const leader = await buildLaunchSpec({
+      kind: 'su', agent: 'claude', workspaceId: 'default', operatorBaseUrl: 'http://localhost:3070',
+      harnessSlug: 'papercup', planRef: 'OUT-1', fleetRole: 'leader',
+    });
+    expect(renderSuPlaybookMock).toHaveBeenCalledTimes(1);
+    expect(leader.impliedStack).toEqual(expect.arrayContaining(['domain:papercusp-engineer', 'fleet-posture:su.outside-fleet-leader']));
   });
 
   it("kind:'su' surfaces a harness that isn't registered in the workspace", async () => {

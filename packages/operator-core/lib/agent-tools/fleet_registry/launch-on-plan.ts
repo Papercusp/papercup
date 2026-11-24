@@ -4419,6 +4419,7 @@ export default defineTool({
         carry: args.carry,
         customBriefText: sharedBriefText,
         goalAllocation,
+        outsidePlan: Boolean(planRef),
       });
       const ctxDir = join(papercuspPathForWorkspace(workspaceId), 'launch-context');
       mkdirSync(ctxDir, { recursive: true });
@@ -4426,7 +4427,9 @@ export default defineTool({
       writeFileSync(ctxPath, composed, 'utf8');
       effectiveLaunchContext = ctxPath;
       memberLaunchContextPath = ctxPath;
-      baselineApplied = true;
+      // A member bound to an outside plan is given its brief alone, so the leader is not
+      // told its members carry the baseline.
+      baselineApplied = !planRef;
     } catch {
       // Compose/write failed — fall back to the raw launchContext (or none). The
       // launch still proceeds; the baseline just isn't prepended this time.
@@ -4498,6 +4501,7 @@ export default defineTool({
             carry: args.members?.[specIndex]?.carry ?? args.carry,
             customBriefText: briefText,
             goalAllocation,
+            outsidePlan: Boolean(planRef),
           });
           const ctxPath = join(ctxDir, `fleet-${fleetSlug}-launch-context-member-${specIndex + 1}.md`);
           writeFileSync(ctxPath, composed, 'utf8');

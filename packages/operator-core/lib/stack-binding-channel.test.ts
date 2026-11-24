@@ -58,7 +58,7 @@ describe('stackRefsForRoute (P-012)', () => {
     expect(rendered.text).toContain('This assignment is already planned outside Papercusp');
     expect(rendered.text).not.toContain('A plan is REQUIRED when work');
     const transition = await renderStackTransitionContext({ stackBefore: [], state: state({ stack: refs }) }, { harnessDir });
-    const expected = role === 'leader' ? 'comment on the affected' : 'coord:orient { intent }';
+    const expected = role === 'leader' ? 'comment on the affected' : 'hands you the next ready item of your fleet';
     expect(transition).toContain(expected);
     if (role === 'leader') {
       for (const prompt of [rendered.text, transition]) {

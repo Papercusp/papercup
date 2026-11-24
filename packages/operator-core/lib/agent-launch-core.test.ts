@@ -95,6 +95,39 @@ describe('GOAL allocation in every member brief (P-020)', () => {
   });
 });
 
+describe('the launch context of a member bound to an outside plan', () => {
+  it('is its fleet and its brief, with nothing of the member baseline, the GOAL allocation or the lineage guard', () => {
+    const inside = composeMemberLaunchContext({ fleetSlug: 'beta', plan: null, count: 2, customBriefText: 'Build the loader.' });
+    const outside = composeMemberLaunchContext({
+      fleetSlug: 'beta', plan: null, count: 2, customBriefText: '  Build the loader.\n', outsidePlan: true,
+      goalAllocation: { goalId: 'goal-1', intendedParallelPlanFleets: 2 },
+    });
+    expect(outside).toBe([
+      '# Fleet member on an outside assignment: this launch',
+      '',
+      'You are one of 2 members of fleet `beta`, building work an outside system planned.',
+      '',
+      '## The brief for this fleet',
+      '',
+      'Build the loader.',
+      '',
+    ].join('\n'));
+    // Positive control: one of Papercusp's own fleets is told every one of these.
+    for (const ownFleetOnly of ['loop:arm', 'work_items:set_blocker', 'tools:find', 'Edit only the staging tree',
+      'work_items:checkpoint', 'improvements:capture', 'scorecards:evaluate', 'Non-negotiables']) {
+      expect(inside).toContain(ownFleetOnly);
+      expect(outside).not.toContain(ownFleetOnly);
+    }
+    expect(outside).not.toContain('GOAL parallel allocation');
+  });
+
+  it('with no brief names the fleet alone, one member in the singular', () => {
+    expect(composeMemberLaunchContext({ fleetSlug: 'beta', count: 1, outsidePlan: true, customBriefText: '  ' })).toBe(
+      '# Fleet member on an outside assignment: this launch\n\nYou are one of 1 member of fleet `beta`, building work an outside system planned.\n',
+    );
+  });
+});
+
 // parked-agent-census-resumption-and-root-cause-2026-10-09 P-008: this rule used to say
 // "loop:end … only when no claimable work remains or you are blocked", teaching a claim
 // holder to stop on a blocker. A blocked holder records it and keeps a bounded wake instead.
