@@ -29,7 +29,8 @@
  *
  * PURE: the filesystem is injected, so this never touches a real tree.
  */
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, it, expect, vi, afterEach } from 'vitest';
@@ -37,12 +38,14 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   COMPLETION_REGISTRY_ROOTS_TIMEOUT_MS,
   completionCheckoutRootForPath,
+  completionNeedsRegisteredRoots,
   completionRepoRootsFromRegistry,
   completionRepoRootsForWorkspace,
   unresolvedPathsInCompletion,
   workspaceQualifiedCompletionPathHint,
 } from './complete';
 import { coerceCompletionShape } from './completion-coerce';
+import { completionSettlementManifest, completionTreeStampForEvidence } from './completion-freshness';
 import {
   CompletionVerificationEvidenceSchema,
   type CompletionVerificationEvidence,
@@ -349,6 +352,75 @@ describe('completionRepoRootsForWorkspace — bounded registry enrichment', () =
         }),
       }),
     ).resolves.toEqual([ROOT, SIDESTAGE_ROOT]);
+  });
+});
+
+describe('completionNeedsRegisteredRoots — a server with no source tree of its own', () => {
+  const base = { declaredPaths: ['src/slugify.py'], unresolved: false, absoluteCheckoutPath: false };
+
+  it('reads the registered checkouts when there is no primary root to resolve a relative path in', () => {
+    expect(completionNeedsRegisteredRoots({ ...base, primaryRoot: null })).toBe(true);
+  });
+
+  it('keeps the primary-root fast path when the primary checkout resolved every path', () => {
+    expect(completionNeedsRegisteredRoots({ ...base, primaryRoot: ROOT })).toBe(false);
+  });
+
+  it('still reads them for an unresolved path or another checkout named absolutely', () => {
+    expect(completionNeedsRegisteredRoots({ ...base, unresolved: true, primaryRoot: ROOT })).toBe(true);
+    expect(completionNeedsRegisteredRoots({ ...base, absoluteCheckoutPath: true, primaryRoot: ROOT })).toBe(true);
+  });
+
+  it('pays for no registry read on a close that declares no path', () => {
+    expect(completionNeedsRegisteredRoots({ ...base, declaredPaths: [], primaryRoot: null })).toBe(false);
+  });
+
+  it('stamps a relative path in a registered worktree, with a settlement receipt naming that tree', async () => {
+    const fixture = mkdtempSync(nodePath.join(tmpdir(), 'complete-headless-'));
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 10_000 }).trim();
+    try {
+      const main = nodePath.join(fixture, 'repo');
+      mkdirSync(main);
+      git(main, 'init', '-q', '-b', 'main');
+      git(main, 'config', 'user.email', 'complete-headless@example.test');
+      git(main, 'config', 'user.name', 'Complete Headless Fixture');
+      git(main, 'config', 'commit.gpgsign', 'false');
+      writeFileSync(nodePath.join(main, 'README.md'), 'base\n');
+      git(main, 'add', '--', 'README.md');
+      git(main, 'commit', '-qm', 'base');
+      const tree = nodePath.join(fixture, 'repo-story');
+      git(main, 'worktree', 'add', '-q', '-b', 'story/one', tree);
+      mkdirSync(nodePath.join(tree, 'src'));
+      writeFileSync(nodePath.join(tree, 'src', 'slugify.py'), 'def slugify(text):\n    return text\n');
+
+      // No primary root: the registry's projects are the only candidates (the run's folder, which
+      // is no repository, and the batch's tree).
+      const roots = await completionRepoRootsForWorkspace('papercusp-workspace', ['src/slugify.py'], {
+        primaryRoot: null,
+        additionalRoots: [],
+        homeRoot: '/',
+        loadRegistry: async () => ({
+          projects: [
+            { slug: 'run', path: fixture },
+            { slug: 'run-tree-1', path: tree },
+          ],
+        }),
+      });
+      expect(roots).toEqual([fixture, tree]);
+      const stamp = await completionTreeStampForEvidence({ filesChanged: ['src/slugify.py'] }, roots);
+
+      expect(stamp?.repositoryRoot).toBe(tree);
+      expect(stamp?.contentIdentity?.map(({ path }) => path)).toEqual(['src/slugify.py']);
+      expect(completionSettlementManifest({ filesChanged: ['src/slugify.py'], treeStamp: stamp })?.repositoryRoot).toBe(tree);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('is what the complete handler asks before it reads the registry', () => {
+    const source = readFileSync(nodePath.join(__dirname, 'complete.ts'), 'utf8');
+    expect(source).toMatch(/const registeredRepoRoots = completionNeedsRegisteredRoots\(\{[^}]*primaryRoot: completionRoot\(\),/);
   });
 });
 

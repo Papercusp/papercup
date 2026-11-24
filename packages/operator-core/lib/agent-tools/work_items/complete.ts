@@ -1590,6 +1590,25 @@ export function resolveCanonicalCompletionRoot(
   }
 }
 
+/**
+ * Whether a close's declared paths are resolved and stamped against the registered checkouts,
+ * not the primary checkout alone: a path the primary checkout cannot resolve, an absolute path
+ * naming another checkout, or no primary checkout at all. A server with no source tree of its
+ * own (a packaged or headless install) has no primary root, so `unresolvedPathsInCompletion`
+ * cannot judge and says nothing; before this, such a close was stamped against no root at all,
+ * persisted no tree stamp and no settlement manifest, and stayed `proposed` for good (measured:
+ * every close of a fleet building a registered project on a headless server).
+ */
+export function completionNeedsRegisteredRoots(input: {
+  declaredPaths: readonly string[];
+  unresolved: boolean;
+  absoluteCheckoutPath: boolean;
+  primaryRoot: string | null;
+}): boolean {
+  if (input.unresolved || input.absoluteCheckoutPath) return true;
+  return input.declaredPaths.length > 0 && !input.primaryRoot;
+}
+
 /** Runtime completion root; linked worktrees resolve to their canonical checkout. */
 function completionRoot(): string | null {
   return resolveCanonicalCompletionRoot(detectPapercupRoot());
@@ -5235,10 +5254,14 @@ async function completeOneTracked(
   const hasAbsoluteCheckoutPath = declaredCompletionPaths.some((path) =>
     Boolean(completionCheckoutRootForPath(path) ?? checkoutRootForPath(path)),
   );
-  const registeredRepoRoots =
-    initialUnresolvedPaths || hasAbsoluteCheckoutPath
-      ? await track('repo-roots', () => completionRepoRootsForWorkspace(ctx.workspaceId, declaredCompletionPaths))
-      : undefined;
+  const registeredRepoRoots = completionNeedsRegisteredRoots({
+    declaredPaths: declaredCompletionPaths,
+    unresolved: Boolean(initialUnresolvedPaths),
+    absoluteCheckoutPath: hasAbsoluteCheckoutPath,
+    primaryRoot: completionRoot(),
+  })
+    ? await track('repo-roots', () => completionRepoRootsForWorkspace(ctx.workspaceId, declaredCompletionPaths))
+    : undefined;
 
   // P-001 / D-016 (design-to-code-coverage-seam-2026-09-02): make `filesChanged` FALSIFIABLE.
   //
