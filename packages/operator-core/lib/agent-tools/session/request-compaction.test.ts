@@ -242,6 +242,16 @@ vi.mock('../../compaction-usage', async () => {
   };
 });
 
+// The caller's registered session: which host kind serves it, and its outside plan. The real
+// reader needs a transaction this suite's PG stub does not have (it warned `sql.begin is not a
+// function` and returned null, which failed every case through fail-on-console), so the suite
+// states the answer: no registered session, unless a case registers one.
+const latestAdvSession = vi.hoisted(() => vi.fn());
+vi.mock('../../adv-sessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../adv-sessions')>()),
+  getLatestActiveAdvSessionByOwner: (...a: unknown[]) => latestAdvSession(...a),
+}));
+
 const savePendingCarryRespawn = vi.hoisted(() => vi.fn());
 const clearPendingCarryRespawn = vi.hoisted(() => vi.fn());
 vi.mock('../../session-brief', async (importOriginal) => {
@@ -338,6 +348,7 @@ const ENVELOPE_LINE = /^⟦turn-origin:self-compaction nonce:[a-f0-9]{16}⟧\n/;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  latestAdvSession.mockReset().mockResolvedValue(null);
   sessionCarryPolicy.mockReset().mockResolvedValue(undefined);
   currentUsageForOwner.mockReset();
   triggerPresence.mockReset().mockResolvedValue({ compactionLimit: 20_000, compactionLimitExplicit: true });
@@ -2112,5 +2123,88 @@ describe('session:request-compaction — native bg task warning (WI-5936)', () =
     const b = body(await call({ focus: 'x' }));
     expect(b.ok).toBe(true);
     expect(b.note).not.toContain('native-bg-tasks');
+  });
+});
+
+// A work-item boundary (work_items/close-follow-up.ts): the session's whole state is the item it
+// now holds, so the successor gets that as its first prompt and no carry document at all.
+describe('the carry at a work-item boundary', () => {
+  const note = 'Your context was renewed at a work-item boundary. You hold WI-10: build it.';
+  const outsidePlanSession = { id: 7, outsidePlanRef: 'outside:story-412', launchArgv: ['psu'] };
+  const boundary = async () => {
+    const { requestItemBoundaryCarry } = await import('./request-compaction');
+    return requestItemBoundaryCarry({} as never, { note });
+  };
+
+  it('queues the note as the first prompt with an EMPTY system-prompt addendum, and builds no document', async () => {
+    latestAdvSession.mockResolvedValue(outsidePlanSession);
+    findLiveHost.mockReturnValue(carryHost);
+    savePendingCarryRespawn.mockImplementation(async (_identity: unknown, payload: unknown) => ({
+      nonce: 'pending-carry-nonce', ...(payload as Record<string, unknown>),
+    }));
+
+    expect(await boundary()).toEqual({ queued: true });
+
+    const msg = injected();
+    expect(msg.mode).toBe('carry-respawn');
+    // The successor's system prompt is the session's own, byte for byte: nothing is appended.
+    expect(msg.systemPromptAddendum).toBe('');
+    expect(msg.data).toMatch(ENVELOPE_LINE);
+    expect(msg.data.replace(ENVELOPE_LINE, '')).toBe(addressContinuationToOwner(note, 'su-caller'));
+    expect(savePendingCarryRespawn).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'su-caller' }),
+      { firstPrompt: msg.data, systemPromptAddendum: '' },
+    );
+    expect(buildOwnerRespawnLaunchSpec).not.toHaveBeenCalled();
+    expect(buildCarryBrief).not.toHaveBeenCalled();
+  });
+
+  it('is the ordinary carry-respawn in everything else: the claim-protecting marker is set', async () => {
+    latestAdvSession.mockResolvedValue(outsidePlanSession);
+    findLiveHost.mockReturnValue(carryHost);
+    await boundary();
+    expect(await consumeRespawnExpected('su-caller')).toBe(true);
+  });
+
+  it('is refused for a session that is not on an outside plan, before any host is asked', async () => {
+    latestAdvSession.mockResolvedValue({ id: 7, outsidePlanRef: null, launchArgv: ['psu'] });
+    findLiveHost.mockReturnValue(carryHost);
+    expect(await boundary()).toEqual({ queued: false, error: 'not_on_an_outside_plan' });
+    expect(savePendingCarryRespawn).not.toHaveBeenCalled();
+    expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
+  it('never restarts a frozen assignment', async () => {
+    const { createHash } = await import('node:crypto');
+    sessionCarryPolicy.mockResolvedValue({ mode: 'off', initialPrompt: 'Frozen task only',
+      initialPromptSha256: createHash('sha256').update('Frozen task only').digest('hex') });
+    latestAdvSession.mockResolvedValue(outsidePlanSession);
+    findLiveHost.mockReturnValue(carryHost);
+    expect(await boundary()).toEqual({ queued: false, error: 'carry_policy_frozen' });
+    expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
+  it('respects the gates every carry-respawn respects', async () => {
+    latestAdvSession.mockResolvedValue(outsidePlanSession);
+    findLiveHost.mockReturnValue(carryHost);
+    resolveWakeModeMock.mockResolvedValue('manual');
+    expect(await boundary()).toEqual({ queued: false, error: 'wake_mode_manual' });
+    resolveWakeModeMock.mockResolvedValue('auto');
+    findLiveHost.mockReturnValue(null);
+    expect(await boundary()).toEqual({ queued: false, error: 'no_live_pty_host' });
+    expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
+  it('cannot be reached from the wire: no argument, by any name, is the boundary', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    // The schema refuses a named look-alike outright, and what it does accept carries no symbol.
+    expect(() => parse({ focus: 'x', itemBoundary: { note } })).toThrow(/Unrecognized key/);
+    const parsed = parse({ focus: 'x' }) as Record<string, unknown>;
+    expect(Object.getOwnPropertySymbols(parsed)).toEqual([]);
+    // Even past the schema, a string-keyed look-alike is the ordinary carry, document and all.
+    const b = body(await tool.handler({ ...parsed, 'Symbol(item-boundary-carry)': { note } } as never, {} as never) as Out);
+    expect(b.firstPromptSource).toBe('continuation-note');
+    expect(buildOwnerRespawnLaunchSpec).toHaveBeenCalledTimes(1);
+    expect(injected().systemPromptAddendum).toBe('CARRY-DOC-ADDENDUM');
   });
 });

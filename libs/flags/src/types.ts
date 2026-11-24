@@ -3210,6 +3210,13 @@ export const FLAGS = {
   // assignee (else the declarer, else the owner). D-003 keeps it a registered
   // kill-switch so it can be turned off if live volume diverges from the replay.
   STUCK_WORK_NOTICES: "papercusp-stuck-work-notices",
+  // work-item close hand-off (2026-11-24): a fleet member on an outside plan starts the
+  // item its close handed it on a FRESH context (work_items/close-follow-up.ts, the
+  // item-boundary carry in session/request-compaction.ts). DEFAULT ON. OFF keeps the
+  // hand-off and the member's context, which is the comparison that says what a fresh
+  // context per item costs or saves on a given workload: a context's fixed cost (its
+  // tools and prompt) against the conversation it drops.
+  FRESH_CONTEXT_AT_ITEM_CLOSE: "papercusp-fresh-context-at-item-close",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];

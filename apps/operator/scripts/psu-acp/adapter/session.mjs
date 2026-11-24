@@ -354,12 +354,18 @@ export class ManagedAgent {
             record.started=true;
             await this.operator.save(record);
             await continueCarry();
+            // A carried prompt can end with a carry of its own queued: a member that closed the item
+            // it was carried over with and was handed its next. That context is about to be replaced
+            // too, so nothing more is said to it, and the turn does not end with work handed and no
+            // context to do it in.
+            if (record.pendingCarry) continue;
             // The fresh context holds Papercusp's carry and nothing of what this turn was asked: the
             // client's prompt went to the context that was just replaced. It is said again, so the
             // session still knows what its client is waiting for.
             if (!turn.cancel) await nativePrompt(await enrolled([{type:'text',text:
               'Your context was carried over to a fresh one during this turn. What follows is what this turn was asked, '+
               'unchanged. Carry on with it from where the work stands; do not start it over.'},...p.prompt]));
+            if (record.pendingCarry) continue;
           }
           census = await this.operator.census(record);
           if (turn.memberError) throw turn.memberError;

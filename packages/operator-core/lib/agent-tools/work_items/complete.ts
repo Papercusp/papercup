@@ -427,6 +427,12 @@ const completionKindEvidenceField = CompletionRecordSchema.shape.kindEvidence.me
   ...CompletionRecordSchema.shape.kindEvidence.meta(),
   'x-papercusp-call-constraint': CHANGE_KIND_PROOF_CALL_CONSTRAINT,
 });
+/** A per-call switch, never per item. What the hand-off does and who gets it unasked: close-follow-up.ts. */
+const handNextCloseField = () =>
+  z
+    .boolean()
+    .optional()
+    .describe('A fleet member\'s terminal close claims its next item and returns it as `next`; false closes only.');
 
 const completionInputSchema = CompletionRecordSchema.extend({
   coverage: completionCoverageField,
@@ -7354,6 +7360,7 @@ const workItemsCompleteTool = defineTool({
             assumptions: closeAssumptionsField,
             changeKinds: changeKindsCloseField(),
             changeKindReason: changeKindReasonCloseField(),
+            handNext: handNextCloseField(),
             // Keep the union's handler type uniform while ensuring a bulk payload
             // cannot accidentally parse through this branch and have `items` stripped.
             items: z.never().optional(),
@@ -7402,6 +7409,7 @@ const workItemsCompleteTool = defineTool({
             /** Default change kinds for items that omit their own. */
             changeKinds: changeKindsCloseField(),
             changeKindReason: changeKindReasonCloseField(),
+            handNext: handNextCloseField(),
             items: z
               .array(itemSpec)
               .min(1)
@@ -7427,7 +7435,21 @@ const workItemsCompleteTool = defineTool({
     ),
   ),
   // Reuse the envelope produced by runBulk; per-item finish/warning fields stay open.
-  result: bulkEnvelopeSchema(),
+  // `next` is the hand-off a terminal close makes for a fleet member (close-follow-up.ts).
+  result: bulkEnvelopeSchema().extend({
+    next: z
+      .object({
+        handed: z.boolean(),
+        workItem: z.object({ id: z.string(), title: z.string().optional(), summary: z.string().optional() }).optional(),
+        held: z.array(z.string()).optional(),
+        reason: z.string().optional(),
+        windDown: z.literal(true).optional(),
+        freshContext: z.literal('queued').optional(),
+        freshContextRefused: z.string().optional(),
+        instruction: z.string(),
+      })
+      .optional(),
+  }),
   // context-trimming-tiers P-025 (write-echo diet): trimmed/standard sessions
   // get a compact workItem ref per result instead of the full echoed row;
   // outcome fields (ok/error/holder/hint/reflect) pass through verbatim —
@@ -7523,7 +7545,40 @@ const workItemsCompleteTool = defineTool({
     // just the n=1 case of that conjunction, so the override is redundant and removing it
     // keeps ONE definition of the rule rather than a general one plus a local restatement
     // that could drift from it.
-    return bulkContent(declaredEnv);
+    //
+    // The closes have landed. What follows is for the caller's NEXT item and cannot fail them.
+    const closedIds = env.results.flatMap((result, index) => {
+      const request = list[index];
+      const landed = (result as { workItem?: { state?: unknown } | null }).workItem?.state;
+      return result.ok === true && request && !request.validateOnly && !request.recordOnly &&
+        typeof landed === 'string' && TERMINAL_WORK_ITEM_STATES.has(landed)
+        ? [request.id]
+        : [];
+    });
+    if (closedIds.length === 0 || args.handNext === false) return bulkContent(declaredEnv);
+    const { handNextAfterClose } = await import('./close-follow-up');
+    const next = await handNextAfterClose({
+      ctx,
+      ownerId: ident.ownerId,
+      workspaceId: ident.workspaceId ?? ctx.workspaceId,
+      handNext: args.handNext,
+      closedIds,
+      everyResultOk: env.ok,
+    }).catch(() => null);
+    if (!next) return bulkContent(declaredEnv);
+    const { ok, ...rest } = declaredEnv;
+    return bulkContent({
+      ok,
+      // Ahead of `results`: the result door cuts an over-long body from its tail, and the echoed
+      // rows are the bulk of it. What the caller holds next is the one thing it must not lose.
+      next,
+      ...rest,
+      // The pull is made, or its refusal is reported: either way "call scheduler:get_next" is stale advice.
+      results: declaredEnv.results.map((result) => {
+        const { fleetRepullNudge: _replacedByNext, ...rest } = result as Record<string, unknown>;
+        return rest as typeof result;
+      }),
+    });
   },
 });
 

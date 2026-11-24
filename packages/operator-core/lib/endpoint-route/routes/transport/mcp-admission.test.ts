@@ -587,6 +587,10 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
       sheddable: false,
       id: null,
     });
+    // A close-only call (`handNext:false`) is still the bounded single close this lane exists for;
+    // the switch is a boolean and nothing else.
+    expect(isBoundedWorkItemsCompleteArgs({ ...recordOnly, handNext: false })).toBe(true);
+    expect(isBoundedWorkItemsCompleteArgs({ ...recordOnly, handNext: 'no' })).toBe(false);
     const bulk = {
       items: [{ id: 'EI-23096430176801261', completion: { summary: 'bulk completion' } }],
       validateOnly: true,

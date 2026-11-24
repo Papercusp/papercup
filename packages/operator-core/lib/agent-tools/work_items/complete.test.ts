@@ -338,6 +338,13 @@ vi.mock('../../blueprint/phone-producer-admission', () => ({
     updatedTs: 1, readStoredOutcome: async () => ({}) })),
 }));
 
+// The hand-off a terminal close makes (close-follow-up.ts has its own suite): mocked here so the
+// cases below assert only WHEN the close asks for one and what it does with the answer.
+const handNextAfterClose = vi.hoisted(() => vi.fn());
+vi.mock('./close-follow-up', () => ({
+  handNextAfterClose: async (...a: unknown[]) => (await handNextAfterClose(...a)) ?? null,
+}));
+
 const ctxFields = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' };
 const ctx = ctxFields as never;
 
@@ -844,6 +851,75 @@ describe('EI-20286699547467039 — unmet completion gates accumulate into one re
 
     expect(r.ok).toBe(true);
     expect(r.unmetGateCount).toBeUndefined();
+  });
+});
+
+describe('a terminal close asks for the caller\'s next item', () => {
+  const task = { id: 'WI-hand', kind: 'task', family: 'issue', state: 'open', harness: 'papercup' };
+  const closing = {
+    id: 'WI-hand',
+    state: 'resolved',
+    assumptions: 'none',
+    completion: {
+      summary: 'built it', verifiedHow: 'automated-test', testsRun: 'vitest a.test.ts', testResult: '5 green',
+      verification: { workOutcome: 'other-no-new-change' },
+    },
+  };
+  const handed = { handed: true, workItem: { id: 'WI-next' }, freshContext: 'queued', instruction: 'End this turn now.' };
+
+  beforeEach(() => {
+    getWorkItem.mockResolvedValue(task);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...task, state: 'done' }));
+    handNextAfterClose.mockReset();
+  });
+
+  it('asks once per call, naming what closed, and returns the answer beside the results as `next`', async () => {
+    handNextAfterClose.mockResolvedValue(handed);
+    const out = await envRaw(closing);
+    expect(out.results[0].ok).toBe(true);
+    expect(out.next).toEqual(handed);
+    // `next` rides ahead of the echoed rows, where a result cut from its tail still carries it.
+    expect(Object.keys(out)).toEqual(['ok', 'next', 'results', 'counts']);
+    expect(out.results[0]).not.toHaveProperty('fleetRepullNudge');
+    expect(handNextAfterClose).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ ownerId: 'su-tester', workspaceId: 'default', handNext: undefined, closedIds: ['WI-hand'], everyResultOk: true }),
+    );
+  });
+
+  it('passes an explicit handNext:true through, and never asks at all on handNext:false', async () => {
+    handNextAfterClose.mockResolvedValue(handed);
+    await envRaw({ ...closing, handNext: true });
+    expect(handNextAfterClose.mock.calls[0]![0]).toMatchObject({ handNext: true });
+    handNextAfterClose.mockClear();
+    const closedOnly = await envRaw({ ...closing, handNext: false });
+    expect(closedOnly.results[0].ok).toBe(true);
+    expect(closedOnly).not.toHaveProperty('next');
+    expect(handNextAfterClose).not.toHaveBeenCalled();
+  });
+
+  it('adds nothing to the result when no hand-off was made', async () => {
+    handNextAfterClose.mockResolvedValue(null);
+    expect(await envRaw(closing)).not.toHaveProperty('next');
+  });
+
+  it('never asks for a call that closed nothing: a refused close, a preflight, a record-only call', async () => {
+    const refused = await envRaw({ ...closing, assumptions: undefined });
+    expect(refused.results[0].ok).toBe(false);
+    await envRaw({ ...closing, validateOnly: true });
+    await envRaw({ id: 'WI-hand', recordOnly: true, completion: { summary: 'progress so far' } });
+    expect(handNextAfterClose).not.toHaveBeenCalled();
+  });
+
+  it('a hand-off that throws leaves the close exactly as it landed', async () => {
+    handNextAfterClose.mockRejectedValue(new Error('dispatcher gone'));
+    const out = await envRaw(closing);
+    expect(out.results[0].ok).toBe(true);
+    expect(out).not.toHaveProperty('next');
+  });
+
+  it('accepts handNext on the batch envelope too, and refuses it per item', () => {
+    expect(() => parseRaw({ handNext: false, items: [closing] })).not.toThrow();
+    expect(() => parseRaw({ items: [{ ...closing, handNext: false }] })).toThrow();
   });
 });
 

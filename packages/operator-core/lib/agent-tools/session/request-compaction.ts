@@ -25,7 +25,7 @@
  * (improvements watchdog) recovers the rare straggler.
  */
 import { z } from 'zod';
-import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveWakeMode } from '../coordination/wake-mode';
 import { getPresence } from '../coordination/presence';
@@ -35,7 +35,7 @@ import { getLatestActiveAdvSessionByOwner } from '../../adv-sessions';
 import { hostCarryFenceBindable } from '../../events/await/carry-fence-bindable';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
-import { buildFrozenAssignmentRespawnSpec, buildOwnerRespawnLaunchSpec, frozenCarryTriggerReceipt, type FrozenCarryTriggerReceipt } from '../../carry-respawn';
+import { buildFrozenAssignmentRespawnSpec, buildOwnerRespawnLaunchSpec, frozenCarryTriggerReceipt, type FrozenCarryTriggerReceipt, type RespawnLaunchSpec } from '../../carry-respawn';
 import { sessionCarryPolicy } from '../../capability-envelope/session-confinement-port';
 import { currentContextUsageForOwner, estimateContextWindowForOwner, resolveModelSpecForOwner } from '../../compaction-usage';
 import { modelWindowForSpec } from '../../agent-config-constants';
@@ -82,6 +82,30 @@ export { addressContinuationToOwner };
 // in enforcement-gate.ts (the single source shared with the P-016 enforcement
 // tier), but this tool's warn path — and any importer — keeps its old surface.
 export { staleCheckpointWarnings, STALE_CHECKPOINT_WARN_MS, type CheckpointFlushWarning };
+
+/**
+ * The carry at a work-item boundary: `work_items:complete` closed an item, handed the caller its
+ * next one, and asks for the next one to start on a fresh context (close-follow-up.ts).
+ *
+ * At that boundary the session's whole state is the item it now holds, so the successor is given
+ * that as its first prompt and NO carry document. The system prompt therefore stays byte for byte
+ * what the session was launched with, and the fresh context reads it from the prompt cache rather
+ * than writing it again; a carry document in the system prompt would cost more at every item than
+ * the shorter context saves. Everything else is the ordinary carry-respawn below: the same wake
+ * and host gates, the same claim protection, edit-lock release and memory epoch.
+ *
+ * Held to a session on an outside plan. Such a session works items in another system's tree and
+ * holds none of what the carry document exists to carry (no loop note, asks, awaits or plan lane),
+ * which is what makes dropping the document safe.
+ */
+export interface ItemBoundaryCarry {
+  /** The successor's first prompt: the item it holds and what to do with it. */
+  note: string;
+}
+
+/** How an item-boundary carry reaches the handler: under a symbol, which no wire argument can
+ *  carry and the argument schema never sees. Only {@link requestItemBoundaryCarry} sets it. */
+const ITEM_BOUNDARY = Symbol('item-boundary-carry');
 
 /** Focus applied when the agent names none AND the carry-brief read fails —
  *  the static floor under the session-specific default (P-003 below). */
@@ -244,7 +268,7 @@ function frozenCompactionCarryRefusal(text: string) {
   };
 }
 
-export default defineTool({
+const sessionRequestCompactionTool = defineTool({
   name: 'session:request-compaction',
   description:
     'Compact THIS session now, at a clean stopping point (near your soft compaction limit). After this turn ends the harness cuts the process and respawns it on fresh context with the deterministic carry document as launch context (P-018 — native /compact is retired); the successor resumes automatically. Pass focus to name what to resume. Supported wire fields are focus, autoContinue, respawn, continueNote, and legacy reason (ignored).',
@@ -320,6 +344,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    const itemBoundary = (args as { [ITEM_BOUNDARY]?: ItemBoundaryCarry })[ITEM_BOUNDARY] ?? null;
     let wakeMode: 'auto' | 'manual';
     try {
       wakeMode = await resolveWakeMode(identity.ownerId);
@@ -363,6 +388,8 @@ export default defineTool({
         note: 'The assignment carry policy could not be verified; this session remains intact.',
       }) }] };
     }
+    // A frozen assignment's successor prompt is hash-bound: an item boundary never restarts one.
+    if (itemBoundary && frozenCarry) return itemBoundaryUnavailable('carry_policy_frozen');
     let frozenTrigger: FrozenCarryTriggerReceipt | undefined;
     if (frozenCarry?.compactionLimit !== undefined) try {
       const presence = await getPresence(identity.ownerId);
@@ -387,6 +414,7 @@ export default defineTool({
     // Loop state can prepare durable carry, but it cannot prove a fresh turn
     // will be delivered without a host. Keep the no-host response explicit.
     const registered = await getLatestActiveAdvSessionByOwner(identity.ownerId,identity.workspaceId);
+    if (itemBoundary && !registered?.outsidePlanRef) return itemBoundaryUnavailable('not_on_an_outside_plan');
     const acp = registered?.launchArgv?.[0] === 'psu-acp' ? registered : null;
     const probe = acp ? JSON.parse(await acpControl(acp,'probe',{})) : null;
     const availability: SelfCompactionAvailability = acp && probe
@@ -519,7 +547,7 @@ export default defineTool({
     // ONE best-effort brief build feeds both the default-focus derivation AND the
     // EI-8987 stale-checkpoint warning below (was two separate buildCarryBrief
     // calls before this pass).
-    const brief = frozenCarry ? null : await loadCarryBrief(identity.ownerId, identity.workspaceId);
+    const brief = frozenCarry || itemBoundary ? null : await loadCarryBrief(identity.ownerId, identity.workspaceId);
     // WI-10002530: break managed carry-respawn STORMS. A successor that asks for
     // another cut before taking a single real turn — repeatedly — is alive but
     // doing no work, and every queued cut used to return 'queued' silently for
@@ -555,7 +583,7 @@ export default defineTool({
         isError: true,
       };
     }
-    const focus = (args.focus ?? '').trim() || (await carryBriefFocus(brief));
+    const focus = itemBoundary ? '' : (args.focus ?? '').trim() || (await carryBriefFocus(brief));
     const focusCarryRefusal = frozenCompactionCarryRefusal(focus);
     if (focusCarryRefusal) return focusCarryRefusal;
     const focusIntegrityRefs = unverifiedFocusRefs(
@@ -571,7 +599,7 @@ export default defineTool({
     // P-013: the host saves every held item's mechanical state before building
     // the successor. The agent contributes judgment only, with no flush bounce.
     const gateNowMs = Date.now();
-    const gate: FlushGateOutcome = frozenCarry ? { verdict: 'clear', tripwires: [] } : await runFlushGate({
+    const gate: FlushGateOutcome = frozenCarry || itemBoundary ? { verdict: 'clear', tripwires: [] } : await runFlushGate({
       boundary: 'compaction',
       mode: 'host-snapshot',
       ownerId: identity.ownerId,
@@ -641,7 +669,7 @@ export default defineTool({
     // producers. Assembly failure leaves the CURRENT session intact (a loud
     // error, never a blind cut) — the agent retries after addressing it.
     let effectiveWindowTokens = FALLBACK_EFFECTIVE_WINDOW_TOKENS;
-    try {
+    if (!itemBoundary) try {
       const observedWindow = await estimateContextWindowForOwner(identity.ownerId);
       if (observedWindow != null) {
         effectiveWindowTokens = observedWindow;
@@ -654,7 +682,7 @@ export default defineTool({
       role?: string | null;
       gateBypass?: { role?: boolean } | null;
     };
-    const spec = await buildOwnerRespawnLaunchSpec(identity.ownerId, {
+    const spec = itemBoundary ? ITEM_BOUNDARY_SPEC : await buildOwnerRespawnLaunchSpec(identity.ownerId, {
       effectiveWindowTokens,
       continueNote: args.continueNote,
       ...(frozenTrigger ? { frozenTrigger } : {}),
@@ -746,7 +774,7 @@ export default defineTool({
           ? retractionSafeContinueNote(retractedHintRefs, role)
           : hasUnverifiedFocusRefs
             ? defaultContinueNote(safeFocus, role)
-            : (args.continueNote ?? defaultContinueNote(focus, role)).trim();
+            : (itemBoundary?.note ?? args.continueNote ?? defaultContinueNote(focus, role)).trim();
         // WI-2140968: address the note to the owner it was written for BEFORE
         // tagging, so the line is inside the payload the ledger hashes and
         // travels with the text down whichever path delivers it.
@@ -900,9 +928,22 @@ export default defineTool({
     // failing the compaction the caller asked for.
     if (ok) {
       try {
-        await releaseOwnerHookFileLocks({ ownerId: identity.ownerId });
-      } catch {
-        /* never block the cut on lock hygiene — the 20-minute lease is the backstop */
+        const freed = await releaseOwnerHookFileLocks({ ownerId: identity.ownerId });
+        // A hook lock that outlives its edit starves git-sync of the file for the whole lease, and
+        // the close that declared it stays unproven. Say what this boundary held and freed, so a
+        // file still locked afterwards can be traced to here rather than guessed at.
+        if (freed.heldBefore > 0) {
+          ctx.log?.(
+            `[carry-respawn] ${identity.ownerId}: released ${freed.released.length} of ${freed.heldBefore} hook file lock(s)` +
+              (freed.released.length < freed.heldBefore ? ' — the rest stay held' : ''),
+          );
+        }
+      } catch (error) {
+        // Never block the cut on lock hygiene — the 20-minute lease is the backstop. But a release
+        // that failed is the difference between a file git-sync commits and one it skips: log it.
+        ctx.log?.(
+          `[carry-respawn] ${identity.ownerId}: hook file locks NOT released: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
     // WI-36074 (context-injection P-023): THE MEMORY EPOCH BOUNDARY.
@@ -1013,7 +1054,7 @@ export default defineTool({
     // free-text carry hints this call writes (focus always; continueNote only
     // when the caller passed one explicitly — the synthesized
     // defaultContinueNote is machine-authored, nothing to lint).
-    const provenanceFields = frozenCarry ? {} : await carryProvenanceFields(
+    const provenanceFields = frozenCarry || itemBoundary ? {} : await carryProvenanceFields(
       [focus, args.continueNote].filter((s): s is string => Boolean(s && s.trim())).join('\n'),
       identity.ownerId,
     );
@@ -1050,7 +1091,7 @@ export default defineTool({
             respawn: ok ? 'queued' : false,
             budgetChars: spec.budgetChars,
             firstPromptSource: spec.frozenAssignmentCarry ? 'frozen-assignment' :
-              spec.firstPrompt ? 'open-owner-message' : 'continuation-note',
+              spec.firstPrompt ? 'open-owner-message' : itemBoundary ? 'item-boundary' : 'continuation-note',
             ...(spec.frozenAssignmentCarry ? { frozenAssignmentCarry: spec.frozenAssignmentCarry } : {}),
             staleCheckpoints,
             // WI-5936: present only when this cut would actually kill something,
@@ -1126,3 +1167,47 @@ export default defineTool({
     };
   },
 });
+
+export default sessionRequestCompactionTool;
+
+/** An item-boundary carry has no document: the successor's system prompt is the session's own. */
+const ITEM_BOUNDARY_SPEC: RespawnLaunchSpec = {
+  firstPrompt: null,
+  systemPromptAddendum: '',
+  budgetChars: 0,
+  openOwnerQuestion: { crossesOpenOwnerMessage: false },
+};
+
+function itemBoundaryUnavailable(error: 'carry_policy_frozen' | 'not_on_an_outside_plan') {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, requested: false, respawn: false, error }) }],
+    isError: true as const,
+  };
+}
+
+/** What became of an item-boundary carry request. `error` is the refusal's own code. */
+export interface ItemBoundaryCarryOutcome {
+  queued: boolean;
+  error?: string;
+}
+
+/**
+ * Ask the caller's host for a carry at a work-item boundary (see {@link ItemBoundaryCarry}).
+ * Queued means what it means for `session:request-compaction`: the host cuts the session once this
+ * turn ends. Never throws: a boundary that cannot be had leaves the session as it is.
+ */
+export async function requestItemBoundaryCarry(
+  ctx: UnifiedToolContext,
+  boundary: ItemBoundaryCarry,
+): Promise<ItemBoundaryCarryOutcome> {
+  try {
+    const result = await sessionRequestCompactionTool.handler({ [ITEM_BOUNDARY]: boundary } as never, ctx);
+    const text = (result as { content?: Array<{ text?: unknown }> }).content?.[0]?.text;
+    const body = typeof text === 'string' ? (JSON.parse(text) as { ok?: unknown; error?: unknown }) : {};
+    return body.ok === true
+      ? { queued: true }
+      : { queued: false, error: typeof body.error === 'string' ? body.error : 'carry_not_queued' };
+  } catch (error) {
+    return { queued: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}

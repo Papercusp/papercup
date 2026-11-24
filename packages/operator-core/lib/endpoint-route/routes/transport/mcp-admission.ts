@@ -840,6 +840,8 @@ export function isBoundedWorkItemsCompleteArgs(args: unknown): boolean {
     'specAdequacy',
     'validateOnly',
     'assumptions',
+    // The hand-off it switches is one bounded `scheduler:get_next`, admitted here in its own right.
+    'handNext',
     ...CRITICAL_WORK_ITEMS_COMPLETE_FLAT_FIELDS,
   ]);
   if (Object.keys(args).some((key) => !allowed.has(key))) return false;
@@ -873,6 +875,7 @@ export function isBoundedWorkItemsCompleteArgs(args: unknown): boolean {
     return false;
   }
   if (args.validateOnly !== undefined && typeof args.validateOnly !== 'boolean') return false;
+  if (args.handNext !== undefined && typeof args.handNext !== 'boolean') return false;
   if (args.assumptions !== undefined) {
     if (args.assumptions === 'none') {
       // Explicitly no assumptions is a valid terminal declaration.
