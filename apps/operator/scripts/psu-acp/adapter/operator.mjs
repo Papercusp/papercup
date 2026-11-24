@@ -22,6 +22,10 @@ export async function loadConfig(path) {
     || config.tools.some(x => typeof x !== 'string' || !/^[\w.-]+:[\w.-]+$/.test(x))) {
     throw new Error('Configure a workspace and a non-empty seed of named Papercusp tools');
   }
+  if (config.memberTools !== undefined && (!Array.isArray(config.memberTools) || !config.memberTools.length
+    || config.memberTools.some(x => typeof x !== 'string' || !/^[\w.-]+:[\w.-]+$/.test(x)))) {
+    throw new Error('memberTools must be a non-empty seed of named Papercusp tools');
+  }
   if (!Array.isArray(config.models) || !config.models.length
     || config.models.some(m => !m.id || !m.model || !m.name || !Array.isArray(m.efforts)
       || m.efforts.some(e => !['low','medium','high','xhigh','max'].includes(e))
@@ -50,6 +54,14 @@ export async function loadConfig(path) {
 
 export class Operator {
   constructor(config,member) { this.config = config; this.member=member; }
+
+  // The Papercusp tools this process's session is given. A fleet member a launch started is
+  // given the member's own (`memberTools`) where the config names them: a member pulls, builds
+  // and closes work-items, and has no use for the tools that file work, launch a fleet or
+  // search the catalog. Every other session, and a member with no list of its own, gets `tools`.
+  tools() {
+    return (this.member && this.config.memberTools) || this.config.tools;
+  }
 
   async token() {
     const token = (await readFile(this.config.tokenFile, 'utf8')).trim();
@@ -169,7 +181,7 @@ export class Operator {
   async server(record) {
     const url = new URL('/api/mcp', this.config.operatorUrl);
     url.search = new URLSearchParams({superuser:'1', origin:'agent', workspace:record.workspace, client:record.owner,
-      native_session:record.native, profile:record.profile, tools:this.config.tools.join(',')});
+      native_session:record.native, profile:record.profile, tools:this.tools().join(',')});
     return {type:'http', name:'papercusp-su', url:String(url), headers:[
       {name:'Authorization', value:'Bearer ' + await this.token()},
       {name:'x-papercusp-native-session', value:record.native}, {name:'x-papercusp-call-origin', value:'agent'}]};

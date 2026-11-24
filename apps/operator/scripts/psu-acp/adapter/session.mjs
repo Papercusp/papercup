@@ -237,7 +237,7 @@ export class ManagedAgent {
     }
     Object.assign(env,this.operator.envelope,{PAPERCUSP_SID:record.owner, PAPERCUSP_ADV_SESSION_ID:String(record.adv),
       PAPERCUSP_NATIVE_SESSION_ID:record.native, PAPERCUSP_WORKSPACE:record.workspace,
-      PAPERCUSP_OPERATOR_URL:this.config.operatorUrl, PAPERCUSP_TOOLS:this.config.tools.join(','),
+      PAPERCUSP_OPERATOR_URL:this.config.operatorUrl, PAPERCUSP_TOOLS:this.operator.tools().join(','),
       PAPERCUSP_CLAUDE_SYSTEM_PROMPT_MANAGED:'1', PSU_ACP_SESSION_ID:record.id});
     if (this.operator.member) env.PAPERCUSP_ADMISSION_CONTEXT=JSON.stringify(this.operator.member.admission);
     if (this.effort !== 'default') env.CLAUDE_CODE_EFFORT_LEVEL = this.effort;
