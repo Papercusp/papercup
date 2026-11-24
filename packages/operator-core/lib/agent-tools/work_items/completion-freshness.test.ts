@@ -119,6 +119,52 @@ describe('completionTreeStamp Git ignore status (WI-10004491)', () => {
   });
 });
 
+describe('completionTreeStamp in a linked worktree', () => {
+  // A worktree's own git dir holds its HEAD; its branch ref and packed-refs are in the
+  // repository's common dir. A close made in one must still be stamped, or it stays
+  // `proposed` with nothing settlement can upgrade.
+  function repoWithWorktree(packRefs: boolean): { base: string; worktree: string } {
+    const base = mkdtempSync(join(tmpdir(), 'completion-worktree-'));
+    const main = join(base, 'main');
+    mkdirSync(main);
+    gitFixture(main, 'init', '-q', '-b', 'main');
+    gitFixture(main, 'config', 'user.email', 'completion-worktree@example.test');
+    gitFixture(main, 'config', 'user.name', 'Completion Worktree Fixture');
+    gitFixture(main, 'config', 'commit.gpgsign', 'false');
+    writeFileSync(join(main, 'README.md'), 'base\n');
+    gitFixture(main, 'add', '--', 'README.md');
+    gitFixture(main, 'commit', '-qm', 'base');
+    const worktree = join(base, 'story');
+    gitFixture(main, 'worktree', 'add', '-q', '-b', 'story/one', worktree);
+    mkdirSync(join(worktree, 'src'));
+    writeFileSync(join(worktree, 'src', 'fix.py'), 'print(1)\n');
+    gitFixture(worktree, 'add', '--', 'src/fix.py');
+    gitFixture(worktree, 'commit', '-qm', 'fix');
+    if (packRefs) gitFixture(main, 'pack-refs', '--all');
+    return { base, worktree };
+  }
+
+  for (const packRefs of [false, true]) {
+    it(`stamps the worktree's own branch head with a ${packRefs ? 'packed' : 'loose'} ref`, async () => {
+      const { base, worktree } = repoWithWorktree(packRefs);
+      try {
+        const head = gitFixture(worktree, 'rev-parse', 'HEAD');
+        const blob = gitFixture(worktree, 'rev-parse', 'HEAD:src/fix.py');
+
+        const stamp = await completionTreeStamp({ repoRoot: worktree, filesChanged: ['src/fix.py'] });
+
+        expect(stamp?.headSha).toBe(head);
+        expect(stamp?.contentIdentity).toEqual([
+          { path: 'src/fix.py', workingTreeBlobSha: blob, headBlobSha: blob },
+        ]);
+        expect(unprovenContentIdentityPaths(stamp)).toEqual([]);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 describe('installed npm artifacts in incidental toolchain checkouts (WI-6554700010016006)', () => {
   async function withRuntimeFixture(run: (fixture: {
     project: string; manager: string; vendor: string; relativeVendor: string;

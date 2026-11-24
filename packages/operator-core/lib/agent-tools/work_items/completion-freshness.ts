@@ -1678,7 +1678,21 @@ export async function completionTreeStamp(
       return await createStamp(repositoryRoot, loose);
     }
 
-    const packed = readFile(nodePath.join(gitDir, 'packed-refs'));
+    // A linked worktree (`git worktree add`) keeps only its HEAD in its own git dir: its branch
+    // refs and `packed-refs` live in the repository's common dir, which its `commondir` file
+    // names. Read there too, or every close made in a worktree goes unstamped, and so stays
+    // `proposed` with nothing settlement can ever upgrade (measured: each close of a fleet
+    // building in a worktree). A plain checkout has no `commondir`: its git dir is its own.
+    const commondir = loose ? undefined : readFile(nodePath.join(gitDir, 'commondir'))?.trim();
+    const commonDir = commondir && !/[\r\n]/.test(commondir) ? nodePath.resolve(gitDir, commondir) : gitDir;
+    if (commonDir !== gitDir) {
+      const shared = readFile(nodePath.join(commonDir, ref))?.trim();
+      if (shared && SHA_RE.test(shared)) {
+        return await createStamp(repositoryRoot, shared);
+      }
+    }
+
+    const packed = readFile(nodePath.join(commonDir, 'packed-refs'));
     if (!packed) return undefined;
     for (const line of packed.split('\n')) {
       if (!line || line.startsWith('#') || line.startsWith('^')) continue;
