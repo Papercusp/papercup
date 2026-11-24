@@ -180,8 +180,18 @@ export class Operator {
 
   async server(record) {
     const url = new URL('/api/mcp', this.config.operatorUrl);
-    url.search = new URLSearchParams({superuser:'1', origin:'agent', workspace:record.workspace, client:record.owner,
-      native_session:record.native, profile:record.profile, tools:this.tools().join(',')});
+    const params = {superuser:'1', origin:'agent', workspace:record.workspace, client:record.owner,
+      native_session:record.native, profile:record.profile, tools:this.tools().join(','),
+      // Every session of this front is Claude Code's. Said here, as psu says it on its own
+      // sessions' URLs: Claude loads a tool's whole definition into its prompt when the tool is
+      // listed, so the operator must not widen the session's list on its own account
+      // (coord:orient activates a task's tools for a client it takes to be something else).
+      agent:'claude'};
+    // A launched member's tools are delivered compact (a summary and the schema, without the
+    // long guidance): its own prompt gives it the calls it makes, and the full definitions of
+    // a handful of tools were most of what a member's session carried.
+    if (this.member && this.config.memberTools) params.tools_compact = this.tools().join(',');
+    url.search = new URLSearchParams(params);
     return {type:'http', name:'papercusp-su', url:String(url), headers:[
       {name:'Authorization', value:'Bearer ' + await this.token()},
       {name:'x-papercusp-native-session', value:record.native}, {name:'x-papercusp-call-origin', value:'agent'}]};
