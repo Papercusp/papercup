@@ -14,10 +14,7 @@
  *   - `CLAUDE_CONFIG_DIR` relocates ALL of `~/.claude` **and** the sibling
  *     `~/.claude.json` into it (the older invoke.ts note that "`.claude.json`
  *     stays at $HOME" is stale for current claude). A fresh dir therefore loses:
- *   - the user-level `papercusp-su` MCP server (lives in `~/.claude.json`) → an
- *     SU session with NO tools;
- *   - the file-lock + coord Pre/PostToolUse hooks (live in
- *     `~/.claude/settings.json`) → the shared-tree lock discipline silently off;
+ *   - the user's own MCP servers and settings;
  *   - the user's plugins/skills (`~/.claude/plugins`), slash commands, themes;
  *   - the onboarding/trust state (`~/.claude.json`) → a re-onboarding flow
  *     (theme picker / trust prompt / login) that BLOCKS an interactive launch.
@@ -25,10 +22,16 @@
  * So instead of a minimal dir we build a **symlink mirror** of `~/.claude` with
  * TWO things isolated: the conversation transcript store `projects/` (EI-153),
  * and the user's PERSONAL MEMORY files (psu-isolation P-002 / D-001 — below).
- * Every other top-level entry — `.credentials.json`, `settings.json`, `plugins/`,
- * `commands/`, … — is symlinked back to the real `~/.claude/<entry>` (writes pass
- * through for in-place writers), the sibling `~/.claude.json` is symlinked in,
- * and `projects/` is a fresh real directory.
+ * Most top-level entries — `.credentials.json`, `plugins/`, `commands/`, … — are
+ * symlinked back to the real `~/.claude/<entry>` (writes pass through for in-place
+ * writers), and `projects/` is a fresh real directory. Two files are REAL COPIES
+ * with Papercusp's additions merged in (psu-claude-overlay.mjs):
+ *   - `settings.json` = the user's settings + the psu overlay
+ *     (`~/.papercusp/claude-settings.json`: lock/coord hooks, plugin, statusLine);
+ *   - `.claude.json` = the user's `~/.claude.json` + the `papercusp-su` server
+ *     (`~/.papercusp/claude-mcp.json`).
+ * Papercusp never writes the user's own `~/.claude.json`, `~/.claude/settings.json`
+ * or `~/.claude/CLAUDE.md`, so a plain `claude` loads none of its tools or hooks.
  *
  * ⚠ CREDENTIALS DO NOT STAY SYMLINKED. claude rewrites `.credentials.json` by
  * REPLACING the file (temp + rename), so the first OAuth refresh / `/login`
@@ -59,7 +62,7 @@
  * in `~/.claude/.credentials.json` (no ANTHROPIC_API_KEY). So `--bare` would make
  * every interactive psu Claude session unauthenticated — the dead-end P-002's
  * fallback anticipated. This config-dir approach keeps OAuth + the file-lock hooks
- * (`settings.json`) + the `papercusp-su` MCP (`~/.claude.json`) intact while
+ * + the `papercusp-su` MCP (the session's own copies above) intact while
  * killing only the personal-memory leak — the same shape Codex already uses
  * (a dedicated CODEX_HOME). RESIDUAL: the cwd-discovered PROJECT `CLAUDE.md` (the
  * repo's own guide) still auto-loads for a repo-cwd session; that's benign (it's
@@ -108,6 +111,14 @@ import { reconcileClaudeCredentials } from './claude-credential-sync';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from './agent-tools/coordination/compaction-recovery';
 import { RTK_SESSION_ENV } from './agent-tools/capability/rtk-rewrite';
 import { resolveClaudeMcpEntry } from './claude-mcp-config.mjs';
+import {
+  PSU_CLAUDE_MCP_SERVER,
+  PSU_CLAUDE_MCP_TEMPLATE_FILE,
+  PSU_CLAUDE_SETTINGS_OVERLAY_FILE,
+  applyPsuClaudeSettingsOverlay,
+  readPsuClaudeMcpEntryAsync,
+  readPsuClaudeSettingsOverlayAsync,
+} from './psu-claude-overlay.mjs';
 
 const interactiveMaterializationQueue = new Map<string, Promise<unknown>>();
 const claudeJsonMutationQueue = new Map<string, Promise<unknown>>();
@@ -638,13 +649,13 @@ function selfHealSettings() {
     const cfg = JSON.parse(readFileSync(path, 'utf8'));
     if (!cfg || typeof cfg !== 'object') return null;
     const fixed = [];
-    // (a) statusLine — copy from the global settings when ours is absent and
-    // the global one is the papercusp fleet statusline (never install a
-    // foreign/personal statusLine on the user's behalf).
+    // (a) statusLine — copy from the psu settings overlay when ours is absent and
+    // it is the papercusp fleet statusline (never install a foreign/personal
+    // statusLine on the user's behalf).
     if (!cfg.statusLine) {
       try {
         const home = process.env.HOME || '';
-        const g = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8'));
+        const g = JSON.parse(readFileSync(join(home, '.papercusp', ${JSON.stringify(PSU_CLAUDE_SETTINGS_OVERLAY_FILE)}), 'utf8'));
         if (g && g.statusLine && String(g.statusLine.command || '').includes('statusline-fleet.sh')) {
           cfg.statusLine = g.statusLine;
           fixed.push('statusLine');
@@ -695,8 +706,9 @@ function selfHealSettings() {
 // drop the session's papercusp-su MCP server definition — the session then runs
 // with NO coordination tools until someone notices (2026-07-12: hours of
 // checkpoints/completions queued behind a "disconnected MCP" that was really a
-// missing config entry). Resolve the maintained global template using the
-// current runtime, preserving a valid local entry when that template is absent.
+// missing config entry). Resolve Papercusp's psu MCP template
+// (~/.papercusp/claude-mcp.json) using the current runtime, preserving a valid
+// local entry when that template is absent.
 function selfHealMcpConfig() {
   try {
     const path = join(dir, '.claude.json');
@@ -705,8 +717,8 @@ function selfHealMcpConfig() {
     if (!cfg || typeof cfg !== 'object') return null;
     const servers = cfg.mcpServers && typeof cfg.mcpServers === 'object' ? cfg.mcpServers : {};
     const home = process.env.HOME || '';
-    const globalPath = join(home, '.claude.json');
-    const g = existsSync(globalPath) ? JSON.parse(readFileSync(globalPath, 'utf8')) : null;
+    const templatePath = join(home, '.papercusp', ${JSON.stringify(PSU_CLAUDE_MCP_TEMPLATE_FILE)});
+    const g = existsSync(templatePath) ? JSON.parse(readFileSync(templatePath, 'utf8')) : null;
     const src = (g && g.mcpServers ? g.mcpServers['papercusp-su'] : null) || servers['papercusp-su'];
     if (!src) return null;
     const resolved = resolveClaudeMcpEntry(src, process.env);
@@ -878,16 +890,16 @@ export async function ensureOnboardingComplete(home: string): Promise<boolean> {
     try {
     if (!(await existsAsync(path))) {
       // WI-4431: a box that has NEVER run claude interactively has nothing to
-      // repair here, but the mirror below only symlinks `.claude.json` IN when
-      // one already exists (`if (existsSync(srcJson))`) — with none, the session
-      // gets no `.claude.json` at all and claude treats it as a true first-run
+      // repair here, but the mirror below copies `.claude.json` from this file —
+      // with none, the session copy carries no onboarding flag and claude treats
+      // it as a true first-run
       // user, hitting the exact same theme-picker wedge this function exists to
       // prevent (observed live: a headless fleet member wedged forever with zero
       // error surfaced, because the operator's install-leg self-repair — a
       // SEPARATE, unrelated mechanism — was transiently unreachable and the box
       // had no prior global config to fall back on). Materialize a minimal one
       // instead of leaving a launch to gamble on a wizard. Deliberately bare: no
-      // `mcpServers` (psu supplies MCP servers via `--mcp-config` argv, never
+      // `mcpServers` (psu adds papercusp-su to the session copy only, never to
       // this file) and no `theme` key (see the doc comment above — the working
       // backups never carry one either, so it is not what gates the wizard).
       await writeFileAsync(path, JSON.stringify({ hasCompletedOnboarding: true }, null, 2), { mode: 0o600 });
@@ -1078,10 +1090,9 @@ export async function writeInteractiveClaudeConfig(opts: {
    * context-trimming-tiers P-020: prune the heavy plugin/MCP surface for a
    * FLEET-tier member — `plugins/installed_plugins.json` is materialized as a
    * FILTERED real file (github/cloudflare/firecrawl dropped; context7 etc.
-   * kept) and `.claude.json` as a filtered real copy (the playwright
-   * mcpServer dropped; papercusp-su kept). Costs those two files their
-   * write-passthrough — fine for a spawned member; default off (symlinks,
-   * byte-identical to today).
+   * kept) and the `.claude.json` copy drops the playwright mcpServer
+   * (papercusp-su kept). Default off (the plugins dir stays a symlink and the
+   * copy keeps every user server).
    */
   prunePlugins?: boolean;
   /**
@@ -1097,7 +1108,7 @@ export async function writeInteractiveClaudeConfig(opts: {
    * EI-16574: the cwd the claude child is about to launch in. When given,
    * `ensureProjectTrust` pre-accepts that cwd's per-project trust flags
    * (external-CLAUDE.md-imports + trust-dialog) BEFORE the mirror below
-   * symlinks `.claude.json` in — otherwise a brand-new cwd (no prior
+   * copies `.claude.json` in — otherwise a brand-new cwd (no prior
    * `projects[cwd]` entry) can wedge a HEADLESS launch forever on a TTY
    * prompt nobody is there to answer. Omit only for a launch whose cwd is
    * already known-trusted (e.g. a resume into an existing session's cwd).
@@ -1188,7 +1199,7 @@ async function materializeInteractiveClaudeConfig(
     // WI-3278: settings.json is a REAL merged copy with the bypassPermissions
     // grant baked in — see writeSessionSettings.
     if (name === 'settings.json') {
-      await writeSessionSettings(join(srcClaude, name), join(configDir, name), opts.agentTaskId);
+      await writeSessionSettings(join(srcClaude, name), join(configDir, name), opts.agentTaskId, home);
       continue;
     }
     await linkIntoAsync(join(srcClaude, name), join(configDir, name));
@@ -1196,7 +1207,7 @@ async function materializeInteractiveClaudeConfig(
   // WI-3278: a box with no global settings.json (the fresh Windows VM) still
   // needs the session-level bypass grant.
   if (!entries.includes('settings.json')) {
-    await writeSessionSettings(null, join(configDir, 'settings.json'), opts.agentTaskId);
+    await writeSessionSettings(null, join(configDir, 'settings.json'), opts.agentTaskId, home);
   }
 
   // WI-3280: the SessionStart recovery hook (always) + the parked playbook
@@ -1209,20 +1220,15 @@ async function materializeInteractiveClaudeConfig(
   await mkdirAsync(join(configDir, ISOLATED_ENTRY), { recursive: true });
 
   // The sibling `~/.claude.json` also relocates under CLAUDE_CONFIG_DIR on
-  // current claude — symlink it so the session keeps the user-level MCP servers
-  // (claude's `papercusp-su` lives here), onboarding-complete + per-project trust
-  // (no re-onboarding), theme, and MCP approvals. Writes pass through to the real
-  // file, exactly as a non-isolated session shares it today.
-  const srcJson = join(home, '.claude.json');
-  if (await existsAsync(srcJson)) {
-    if (opts.prunePlugins) {
-      // P-020: a filtered REAL copy — the playwright mcpServer dropped
-      // (papercusp-su + everything else kept verbatim).
-      await writePrunedClaudeJson(srcJson, join(configDir, '.claude.json'));
-    } else {
-      await linkIntoAsync(srcJson, join(configDir, '.claude.json'));
-    }
-  }
+  // current claude. The session gets a REAL COPY of it (onboarding-complete +
+  // per-project trust, theme, MCP approvals, the user's own MCP servers) with the
+  // `papercusp-su` server added from Papercusp's template. That server lives only
+  // here, never in the user's ~/.claude.json, so a plain `claude` does not load
+  // the Papercusp catalog (psu-claude-overlay.mjs).
+  await writeSessionClaudeJson(join(home, '.claude.json'), join(configDir, '.claude.json'), {
+    prune: opts.prunePlugins === true,
+    entry: await readPsuClaudeMcpEntryAsync(home),
+  });
 
   return { configDir };
 }
@@ -1233,8 +1239,8 @@ async function materializeInteractiveClaudeConfig(
  *
  * The distinction exists because a session's `CLAUDE_CONFIG_DIR` can come into
  * being three ways, and only one of them is launch-ready:
- *   1. `writeInteractiveClaudeConfig` (fresh psu launch) — the full symlink
- *      mirror. READY.
+ *   1. `writeInteractiveClaudeConfig` (fresh psu launch) — the full mirror.
+ *      READY.
  *   2. `writeSpawnClaudeConfig(persistentDir)` (orchestrator bee / plan-run) —
  *      a DELIBERATELY minimal dir: the `.credentials.json` symlink and nothing
  *      else. Correct for a headless `-p` worker, NOT launch-ready for a human.
@@ -1251,13 +1257,12 @@ async function materializeInteractiveClaudeConfig(
  *
  * The check keys on `.claude.json` because it is both the file that gates the
  * wizard and the one only the mirror provides:
- *   - a SYMLINK THAT RESOLVES ⇒ the mirror linked the user's real config in.
- *     READY. (A DANGLING one is not: `lstat` still reports a symlink, so the
- *     check must read THROUGH it — a link whose target was deleted/relocated
- *     gives claude nothing, which is the same wizard by a different door.)
- *   - a real file WITH `mcpServers` ⇒ a P-020 pruned fleet copy (filtered, but
- *     complete). READY — and reported ready deliberately, so a re-ensure never
- *     silently UN-prunes a context-trimmed member.
+ *   - a real file WITH `mcpServers` ⇒ the mirror's copy (`writeSessionClaudeJson`
+ *     always writes the key, P-020-pruned or not). READY — and reported ready
+ *     deliberately, so a re-ensure never silently UN-prunes a context-trimmed member.
+ *   - a SYMLINK THAT RESOLVES ⇒ a dir an older mirror built. READY; the next
+ *     materialize replaces it with a copy. (A DANGLING one is not: `lstat` still
+ *     reports a symlink, so the check must read THROUGH it.)
  *   - a real file WITHOUT `mcpServers` ⇒ the stub claude mints for ITSELF on a
  *     first-run boot. NOT ready: it carries an `oauthAccount` (so the *second*
  *     launch stops prompting — the "re-run it and it works" symptom) but no MCP
@@ -1329,7 +1334,8 @@ export async function ensureInteractiveClaudeConfig(opts: {
 
 /**
  * WI-3278: the session's `settings.json` is a REAL MERGED COPY of the user's
- * global settings with `permissions.defaultMode = 'bypassPermissions'` baked in
+ * global settings plus the psu overlay (Papercusp's hooks, plugin and statusLine),
+ * with `permissions.defaultMode = 'bypassPermissions'` baked in
  * — NOT a symlink. psu grants a session its dangerous permissions via CLI argv
  * (`--permission-mode bypassPermissions` + `--dangerously-skip-permissions`),
  * but claude 2.1.20x can SELF-RE-EXEC (TUI fullscreen switch / update relaunch,
@@ -1348,7 +1354,8 @@ export async function ensureInteractiveClaudeConfig(opts: {
 async function writeSessionSettings(
   srcSettings: string | null,
   dest: string,
-  agentTaskId?: string | null,
+  agentTaskId: string | null | undefined,
+  home: string,
 ): Promise<void> {
   let cfg: Record<string, unknown> = {};
   if (srcSettings) {
@@ -1358,6 +1365,10 @@ async function writeSessionSettings(
       /* no/unparseable global settings — write the grant alone */
     }
   }
+  // The Papercusp hooks, plugin enrollment and fleet statusLine reach a session ONLY here:
+  // they live in the psu overlay (~/.papercusp/claude-settings.json), never in the user's
+  // ~/.claude/settings.json, so a plain `claude` runs none of them (psu-claude-overlay.mjs).
+  cfg = applyPsuClaudeSettingsOverlay(cfg, await readPsuClaudeSettingsOverlayAsync(home));
   const permissions = {
     ...(cfg.permissions as Record<string, unknown> | undefined),
     defaultMode: 'bypassPermissions',
@@ -1494,21 +1505,70 @@ async function writePrunedPluginsDir(srcPlugins: string, destPlugins: string): P
   }
 }
 
-/** P-020: write a filtered real copy of `~/.claude.json` with the pruned
- *  mcpServers removed. Best-effort: any failure falls back to the symlink. */
-async function writePrunedClaudeJson(srcJson: string, destJson: string): Promise<void> {
-  if (await presentAsync(destJson)) return; // idempotent (resume)
+/**
+ * Write the session's `.claude.json`: a real copy of the user's `~/.claude.json`
+ * (P-020: minus FLEET_PRUNED_MCP_SERVERS for a fleet member) with the psu
+ * `papercusp-su` template added. An existing real copy (a resume) keeps its own
+ * accrued state and only gets the server re-asserted; a symlink from an older
+ * mirror, or an absent file, is replaced with a fresh copy (none is written when
+ * the user has no `~/.claude.json` either). `mcpServers` is
+ * always written, even empty, because `isInteractiveClaudeConfigReady` keys on
+ * it. The template stays unresolved here; psu resolves it against the launch
+ * environment (materializePsuClaudeMcpConfig).
+ */
+async function writeSessionClaudeJson(
+  srcJson: string,
+  destJson: string,
+  opts: { prune: boolean; entry: Record<string, unknown> | null },
+): Promise<void> {
+  let cfg: Record<string, unknown> | null = null;
+  let isRealCopy = false;
   try {
-    const j = JSON.parse(await readFileAsync(srcJson, 'utf8')) as {
-      mcpServers?: Record<string, unknown>;
-    };
-    if (j.mcpServers && typeof j.mcpServers === 'object') {
-      j.mcpServers = Object.fromEntries(
-        Object.entries(j.mcpServers).filter(([name]) => !FLEET_PRUNED_MCP_SERVERS.has(name)),
+    isRealCopy = !(await lstatAsync(destJson)).isSymbolicLink();
+  } catch {
+    /* absent */
+  }
+  let src: Record<string, unknown> | null = null;
+  try {
+    const parsed = JSON.parse(await readFileAsync(srcJson, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) src = parsed as Record<string, unknown>;
+  } catch {
+    /* no ~/.claude.json yet */
+  }
+  // No user config and no session copy: claude has never run here, so a bare copy
+  // would only be a stub that skips onboarding (ensureOnboardingComplete creates the
+  // user file before a real launch reaches this point).
+  if (!src && !isRealCopy) return;
+  src ??= {};
+  if (isRealCopy) {
+    try {
+      cfg = JSON.parse(await readFileAsync(destJson, 'utf8')) as Record<string, unknown>;
+    } catch {
+      cfg = null;
+    }
+  }
+  if (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) {
+    // A resume keeps its own copy, but picks up the onboarding flag and any
+    // per-project trust entry (ensureProjectTrust) the user's file gained since.
+    if (src.hasCompletedOnboarding === true) cfg.hasCompletedOnboarding = true;
+    const srcProjects = src.projects && typeof src.projects === 'object' ? (src.projects as Record<string, unknown>) : {};
+    const projects = cfg.projects && typeof cfg.projects === 'object' ? { ...(cfg.projects as Record<string, unknown>) } : {};
+    for (const [dir, entry] of Object.entries(srcProjects)) if (!(dir in projects)) projects[dir] = entry;
+    cfg.projects = projects;
+  } else {
+    cfg = { ...src };
+    if (opts.prune && cfg.mcpServers && typeof cfg.mcpServers === 'object') {
+      cfg.mcpServers = Object.fromEntries(
+        Object.entries(cfg.mcpServers as Record<string, unknown>).filter(([name]) => !FLEET_PRUNED_MCP_SERVERS.has(name)),
       );
     }
-    await writeFileAsync(destJson, JSON.stringify(j, null, 1));
-  } catch {
-    await linkIntoAsync(srcJson, destJson);
   }
+  const servers =
+    cfg.mcpServers && typeof cfg.mcpServers === 'object' ? { ...(cfg.mcpServers as Record<string, unknown>) } : {};
+  // Keep a session's already-resolved entry; resolution happens at launch.
+  if (opts.entry && !servers[PSU_CLAUDE_MCP_SERVER]) servers[PSU_CLAUDE_MCP_SERVER] = opts.entry;
+  cfg.mcpServers = servers;
+  const tmp = `${destJson}.${process.pid}.tmp`;
+  await writeFileAsync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+  await renameAsync(tmp, destJson); // replaces an old mirror's symlink itself, never its target
 }

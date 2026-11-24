@@ -32,6 +32,12 @@ async function readClaudeJson(): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(resolveClaudeConfigPath(home), 'utf8'));
 }
 
+const templatePath = () => join(home, '.papercusp', 'claude-mcp.json');
+
+async function readTemplateServers(): Promise<Record<string, { type: string; url: string; headers: Record<string, string> }>> {
+  return JSON.parse(await readFile(templatePath(), 'utf8')).mcpServers;
+}
+
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), 'claude-integ-'));
 });
@@ -121,27 +127,49 @@ describe('buildClaudeMcpEntry', () => {
 });
 
 describe('installClaudeIntegration', () => {
-  it('registers papercusp-su into an existing ~/.claude.json, preserving every other key', async () => {
+  it('writes papercusp-su to the psu template and never registers it in ~/.claude.json', async () => {
     await seedPhase1('TOK-1', 'agent-1');
     await writeClaudeJson({ numStartups: 7, theme: 'dark', mcpServers: { other: { type: 'http', url: 'u', headers: {} } } });
+    const userBefore = await readFile(resolveClaudeConfigPath(home), 'utf8');
 
     const res = await installClaudeIntegration({ home });
     expect(res.changed).toBe(true);
     expect(res.mcpServerInstalled).toBe(true);
+    expect(res.templatePath).toBe(templatePath());
 
-    const cfg = await readClaudeJson();
-    expect(cfg.numStartups).toBe(7); // preserved
-    expect(cfg.theme).toBe('dark'); // preserved
-    const servers = cfg.mcpServers as Record<string, { url: string; headers: { Authorization: string } }>;
-    expect(servers.other).toBeDefined(); // other server preserved
+    // The user's own config is byte-identical: a plain `claude` loads no Papercusp tools.
+    expect(await readFile(resolveClaudeConfigPath(home), 'utf8')).toBe(userBefore);
+    const servers = await readTemplateServers();
+    expect(Object.keys(servers)).toEqual(['papercusp-su']);
     expect(servers['papercusp-su'].url).toContain('${PAPERCUSP_OPERATOR_URL:-');
     expect(servers['papercusp-su'].url).toContain('client=${PAPERCUSP_SID:-agent-1}');
     expect(servers['papercusp-su'].headers.Authorization).toBe('Bearer TOK-1');
   });
 
+  it('removes a legacy papercusp-su entry from ~/.claude.json, preserving every other key', async () => {
+    await seedPhase1();
+    await writeClaudeJson({
+      numStartups: 7,
+      mcpServers: { 'papercusp-su': { type: 'http', url: 'old', headers: {} }, other: { type: 'http', url: 'u', headers: {} } },
+    });
+    const res = await installClaudeIntegration({ home });
+    expect(res.actions).toContain('removed legacy mcpServers.papercusp-su from ~/.claude.json');
+    const cfg = await readClaudeJson();
+    expect(cfg.numStartups).toBe(7);
+    expect(cfg.mcpServers).toEqual({ other: { type: 'http', url: 'u', headers: {} } });
+    expect((await readTemplateServers())['papercusp-su']).toBeDefined();
+  });
+
+  it('removes the legacy entry even before phase 1 has minted the token', async () => {
+    await writeClaudeJson({ mcpServers: { 'papercusp-su': { type: 'http', url: 'old', headers: {} } } });
+    const res = await installClaudeIntegration({ home });
+    expect(res.reason).toBe('phase1_not_run');
+    expect(res.changed).toBe(true);
+    expect((await readClaudeJson()).mcpServers).toEqual({});
+  });
+
   it('is idempotent — a second call writes nothing', async () => {
     await seedPhase1();
-    await writeClaudeJson({ mcpServers: {} });
     const first = await installClaudeIntegration({ home });
     expect(first.changed).toBe(true);
     const second = await installClaudeIntegration({ home });
@@ -149,160 +177,97 @@ describe('installClaudeIntegration', () => {
     expect(second.mcpServerInstalled).toBe(true);
   });
 
+  it('never creates ~/.claude.json (onboarding is ensured at launch instead)', async () => {
+    await seedPhase1();
+    const res = await installClaudeIntegration({ home });
+    expect(res.mcpServerInstalled).toBe(true);
+    await expect(stat(resolveClaudeConfigPath(home))).rejects.toBeTruthy();
+  });
+
   it('WI-1457: bakes the resilient-proxy base as the fallback when PAPERCUSP_MCP_PROXY_BASE is set', async () => {
     await seedPhase1();
-    await writeClaudeJson({ mcpServers: {} });
     process.env.PAPERCUSP_MCP_PROXY_BASE = 'http://127.0.0.1:9071';
     try {
-      const res = await installClaudeIntegration({ home });
-      expect(res.changed).toBe(true);
-      const servers = (await readClaudeJson()).mcpServers as Record<string, { url: string }>;
-      // The operator-side reconciler must never re-mint a direct-:3070 fallback
-      // while the environment routes agents through the proxy (the regression
-      // that silently undid the P-006 cutover).
-      expect(servers['papercusp-su'].url).toContain('${PAPERCUSP_OPERATOR_URL:-http://127.0.0.1:9071}');
+      await installClaudeIntegration({ home });
+      expect((await readTemplateServers())['papercusp-su'].url).toContain('${PAPERCUSP_OPERATOR_URL:-http://127.0.0.1:9071}');
     } finally {
       delete process.env.PAPERCUSP_MCP_PROXY_BASE;
     }
   });
 
-  it('P-007: dev-box default (no PAPERCUSP_MCP_PROXY_BASE, no PAPERCUSP_DESKTOP) bakes the resilient :9071 proxy fallback, never direct :3070', async () => {
+  it('P-007: with neither PAPERCUSP_MCP_PROXY_BASE nor PAPERCUSP_DESKTOP set, bakes the :9071 proxy fallback, never direct :3070', async () => {
     await seedPhase1();
-    await writeClaudeJson({ mcpServers: {} });
     const prevProxy = process.env.PAPERCUSP_MCP_PROXY_BASE;
     const prevDesktop = process.env.PAPERCUSP_DESKTOP;
     delete process.env.PAPERCUSP_MCP_PROXY_BASE;
     delete process.env.PAPERCUSP_DESKTOP;
     try {
-      const res = await installClaudeIntegration({ home });
-      expect(res.changed).toBe(true);
-      const servers = (await readClaudeJson()).mcpServers as Record<string, { url: string }>;
-      // The proxy fronts :3070's deploy-restarts (WI-1457); a bare `claude` must
-      // ride it by DEFAULT — even a dev-box reconcile with neither env set — so a
-      // deploy no longer drops the session's tools. A direct-:3070 fallback here is
-      // the exact regression that silently reverted the P-006 cutover.
-      expect(servers['papercusp-su'].url).toContain('${PAPERCUSP_OPERATOR_URL:-http://127.0.0.1:9071}');
-      expect(servers['papercusp-su'].url).not.toContain(':3070');
+      await installClaudeIntegration({ home });
+      const url = (await readTemplateServers())['papercusp-su'].url;
+      expect(url).toContain('${PAPERCUSP_OPERATOR_URL:-http://127.0.0.1:9071}');
+      expect(url).not.toContain(':3070');
     } finally {
       if (prevProxy === undefined) delete process.env.PAPERCUSP_MCP_PROXY_BASE;
       else process.env.PAPERCUSP_MCP_PROXY_BASE = prevProxy;
       if (prevDesktop === undefined) delete process.env.PAPERCUSP_DESKTOP;
       else process.env.PAPERCUSP_DESKTOP = prevDesktop;
     }
-  });
-
-  it('NEVER creates ~/.claude.json when claude was never launched (dev box, seedIfAbsent off)', async () => {
-    await seedPhase1();
-    const res = await installClaudeIntegration({ home });
-    expect(res.changed).toBe(false);
-    expect(res.reason).toBe('claude_not_initialized');
-    await expect(stat(resolveClaudeConfigPath(home))).rejects.toBeTruthy(); // still absent
-  });
-
-  it('WI-3091 desktop: seedIfAbsent CREATES a minimal ~/.claude.json with papercusp-su when absent', async () => {
-    await seedPhase1();
-    const res = await installClaudeIntegration({ home, seedIfAbsent: true });
-    expect(res.changed).toBe(true);
-    expect(res.mcpServerInstalled).toBe(true);
-    expect(res.reason).toBeUndefined();
-    const cfg = await readClaudeJson();
-    // onboarding pre-completed so claude's own theme/trust flow can't BLOCK the psu launch
-    expect(cfg.hasCompletedOnboarding).toBe(true);
-    const srv = (cfg.mcpServers as Record<string, { type: string; url: string; headers: Record<string, string> }>)['papercusp-su'];
-    expect(srv?.type).toBe('http');
-    // env-interpolated url self-heals across the dynamic desktop operator port
-    expect(srv?.url).toContain('${PAPERCUSP_OPERATOR_URL:-');
-    expect(srv?.url).toContain('/api/mcp?superuser=1');
-    expect(srv?.headers?.Authorization).toBe('Bearer TOK-abc');
-  });
-
-  it('WI-3247 desktop: seedIfAbsent bakes the stable MCP proxy fallback, not a dynamic or dead operator port', async () => {
-    await seedPhase1();
-    const prevDesktop = process.env.PAPERCUSP_DESKTOP;
-    const prevProxy = process.env.PAPERCUSP_MCP_PROXY_BASE;
-    process.env.PAPERCUSP_DESKTOP = '1';
-    delete process.env.PAPERCUSP_MCP_PROXY_BASE;
-    try {
-      const res = await installClaudeIntegration({ home, seedIfAbsent: true });
-      expect(res.changed).toBe(true);
-      const srv = ((await readClaudeJson()).mcpServers as Record<string, { url: string }>)['papercusp-su'];
-      expect(srv.url).toContain('${PAPERCUSP_OPERATOR_URL:-http://127.0.0.1:9071}');
-    } finally {
-      if (prevDesktop === undefined) delete process.env.PAPERCUSP_DESKTOP;
-      else process.env.PAPERCUSP_DESKTOP = prevDesktop;
-      if (prevProxy === undefined) delete process.env.PAPERCUSP_MCP_PROXY_BASE;
-      else process.env.PAPERCUSP_MCP_PROXY_BASE = prevProxy;
-    }
-  });
-
-  it('WI-3091 desktop: seedIfAbsent is idempotent when the file already exists (merges, does not overwrite user keys)', async () => {
-    await seedPhase1();
-    await writeClaudeJson({ hasCompletedOnboarding: true, theme: 'dark', mcpServers: { other: { type: 'http', url: 'http://x' } } });
-    const res = await installClaudeIntegration({ home, seedIfAbsent: true });
-    expect(res.changed).toBe(true); // added papercusp-su
-    const cfg = await readClaudeJson();
-    expect(cfg.theme).toBe('dark'); // preserved
-    const servers = cfg.mcpServers as Record<string, unknown>;
-    expect(servers.other).toBeTruthy(); // preserved
-    expect(servers['papercusp-su']).toBeTruthy(); // added
   });
 
   it('returns phase1_not_run when token/agent-id are missing', async () => {
-    await writeClaudeJson({ mcpServers: {} }); // claude.json exists, but no ~/.papercusp secrets
     const res = await installClaudeIntegration({ home });
     expect(res.reason).toBe('phase1_not_run');
     expect(res.changed).toBe(false);
+    await expect(stat(templatePath())).rejects.toBeTruthy();
   });
 
-  it('skips (does not destroy) an invalid ~/.claude.json', async () => {
+  it('leaves an invalid ~/.claude.json untouched', async () => {
     await seedPhase1();
     await writeFile(resolveClaudeConfigPath(home), '{ this is not json ');
     const res = await installClaudeIntegration({ home });
-    expect(res.reason).toBe('claude_json_invalid');
-    expect(res.changed).toBe(false);
-    // file left untouched (not renamed away)
+    expect(res.mcpServerInstalled).toBe(true);
     expect(await readFile(resolveClaudeConfigPath(home), 'utf8')).toBe('{ this is not json ');
   });
 
-  it('writes 0600 (not group/world readable)', async () => {
+  it('writes the template 0600 (it carries the bearer)', async () => {
     await seedPhase1();
-    await writeClaudeJson({ mcpServers: {} });
     await installClaudeIntegration({ home });
-    const st = await stat(resolveClaudeConfigPath(home));
+    const st = await stat(templatePath());
     expect(st.mode & 0o077).toBe(0);
   });
 
   it('honors the profile option (power)', async () => {
     await seedPhase1();
-    await writeClaudeJson({ mcpServers: {} });
     await installClaudeIntegration({ home, profile: 'power' });
-    const servers = (await readClaudeJson()).mcpServers as Record<string, { url: string }>;
-    expect(servers['papercusp-su'].url).toContain('profile=${PAPERCUSP_PROFILE:-power}');
+    expect((await readTemplateServers())['papercusp-su'].url).toContain('profile=${PAPERCUSP_PROFILE:-power}');
   });
 });
 
 describe('uninstallClaudeIntegration', () => {
-  it('removes papercusp-su, preserves other servers', async () => {
+  it('removes the template and any legacy ~/.claude.json entry, preserving other servers', async () => {
     await seedPhase1();
+    await installClaudeIntegration({ home });
     await writeClaudeJson({ mcpServers: { 'papercusp-su': { type: 'http', url: 'x', headers: {} }, keep: { type: 'http', url: 'y', headers: {} } } });
     const res = await uninstallClaudeIntegration({ home });
     expect(res.changed).toBe(true);
     const servers = (await readClaudeJson()).mcpServers as Record<string, unknown>;
     expect(servers['papercusp-su']).toBeUndefined();
     expect(servers.keep).toBeDefined();
+    await expect(stat(templatePath())).rejects.toBeTruthy();
   });
 
-  it('no-ops when ~/.claude.json is absent', async () => {
+  it('no-ops when nothing is installed', async () => {
     const res = await uninstallClaudeIntegration({ home });
     expect(res.changed).toBe(false);
   });
 });
 
 describe('readClaudeIntegrationState', () => {
-  it('reports installed when papercusp-su present', async () => {
+  it('reports installed from the psu template, not from ~/.claude.json', async () => {
     await writeClaudeJson({ mcpServers: { 'papercusp-su': { type: 'http', url: 'x', headers: {} } } });
-    const st = await readClaudeIntegrationState({ home });
-    expect(st.claudeConfigExists).toBe(true);
-    expect(st.mcpServerInstalled).toBe(true);
+    expect((await readClaudeIntegrationState({ home })).mcpServerInstalled).toBe(false);
+    await seedPhase1();
+    await installClaudeIntegration({ home });
+    expect((await readClaudeIntegrationState({ home })).mcpServerInstalled).toBe(true);
   });
 });

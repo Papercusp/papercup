@@ -7,8 +7,10 @@
 #   1. Generates a 32-byte random token
 #   2. Writes ~/.papercusp/superuser-token (mode 0600)
 #   3. MERGES a `papercusp-su` server entry into ~/.omp/agent/mcp.json
-#      AND ~/.claude.json (preserves any other MCP servers already
-#      configured in either client).
+#      (preserves any other MCP servers already configured), and writes the
+#      Claude entry to ~/.papercusp/claude-mcp.json, which psu copies into each
+#      Claude session's own config. ~/.claude.json is not written (a legacy
+#      entry there is removed), so a plain `claude` loads no Papercusp tools.
 #   4. Writes the engineer-collaborator playbook + coordination extension
 #      as standalone OPT-IN files under ~/.papercusp/, and installs `psu`
 #      (the one launcher). The `*-su` wrappers are RETIRED — `psu` →
@@ -17,8 +19,9 @@
 #      `codex` are left untouched.
 #   4b. Installs the SU-locks ENFORCEMENT hook scripts + wires them where
 #      the client actually reads them:
-#        - Claude → Pre/PostToolUse in ~/.claude/settings.json (USER-level,
-#          automatic — survives a raw `claude`/`psu` launch).
+#        - Claude → ~/.papercusp/claude-settings.json, the psu settings overlay
+#          psu merges into each session's own settings.json. The user's
+#          ~/.claude/settings.json is not written (legacy entries are removed).
 #        - OMP    → coord-hook.ts, loaded per-launch by psu via `-e`.
 #        - Codex  → hooks.json in the per-session CODEX_HOME psu mints.
 #          Current managed Codex builds fire Pre/PostToolUse on apply_patch;
@@ -407,7 +410,7 @@ hooks['PostToolBatch'] = arr
 # dark (2026-07-01 MCP auto-reconnect fix). Approval keys to the server NAME, not the URL, so a
 # URL re-mint is transparent — the client's own reconnect re-attaches with no human /mcp. Claude-
 # only key; skip codex homes.
-if path.rstrip('/').endswith('.claude/settings.json'):
+if path.rstrip('/').endswith(('.claude/settings.json', '.papercusp/claude-settings.json')):
     cfg['enableAllProjectMcpServers'] = True
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1447,27 +1450,33 @@ PYEOF
 chmod 600 "$OMP_CONFIG_PATH"
 echo "✓ Merged 'papercusp-su' into $OMP_CONFIG_PATH (mode 0600)"
 
-# 3a. Merge the same `papercusp-su` entry into Claude Code's config.
-# Claude Code reads ~/.claude.json (per-user, global) for MCP servers
-# in addition to per-project .mcp.json files. We only touch it if the
-# file already exists — a missing ~/.claude.json means Claude Code has
-# never been launched on this machine, and creating one would seed
-# unrelated defaults the user didn't ask for. The merge preserves
-# every other MCP server already registered.
+# 3a. Write the same `papercusp-su` entry for Claude Code to Papercusp's own
+# ~/.papercusp/claude-mcp.json. psu copies it into each Claude session's own
+# CLAUDE_CONFIG_DIR, so only psu-launched sessions get the Papercusp tools; the
+# user's ~/.claude.json is never written. Keep the entry in sync with
+# desktop-install/claude-integration.ts buildClaudeMcpEntry (the other writer).
 CLAUDE_CONFIG_PATH="${HOME}/.claude.json"
-if [ -f "$CLAUDE_CONFIG_PATH" ]; then
-  python3 - "$CLAUDE_CONFIG_PATH" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$PROFILE" <<'PYEOF'
-import json, os, sys, time
-path, operator_url, token, agent_id, profile = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
-try:
-    with open(path) as f:
-        cfg = json.load(f)
-except json.JSONDecodeError:
-    print(f'! existing {path} is invalid JSON; backing up and starting fresh', file=sys.stderr)
-    os.rename(path, path + '.bak.' + str(int(time.time())))
-    cfg = {}
+CLAUDE_MCP_TEMPLATE_PATH="${HOME}/.papercusp/claude-mcp.json"
+  python3 - "$CLAUDE_MCP_TEMPLATE_PATH" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$PROFILE" "$CLAUDE_CONFIG_PATH" <<'PYEOF'
+import json, os, sys
+path, operator_url, token, agent_id, profile, user_config = sys.argv[1:7]
 
-cfg.setdefault('mcpServers', {})
+# Remove the user-level entry earlier versions of this script registered.
+try:
+    with open(user_config) as f:
+        user_cfg = json.load(f)
+    if isinstance(user_cfg, dict) and 'papercusp-su' in (user_cfg.get('mcpServers') or {}):
+        del user_cfg['mcpServers']['papercusp-su']
+        tmp = user_config + '.papercusp.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(user_cfg, f, indent=2)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, user_config)
+        print(f'✓ Removed legacy papercusp-su entry from {user_config}')
+except (FileNotFoundError, json.JSONDecodeError):
+    pass
+
+cfg = {'mcpServers': {}}
 # Per-session identity + native-session proof + scope: Claude Code expands
 # ${VAR}/${VAR:-default} in the MCP URL at launch. psu exports PAPERCUSP_SID /
 # PAPERCUSP_WORKSPACE / PAPERCUSP_PROFILE per launch, while Claude supplies
@@ -1504,14 +1513,12 @@ cfg['mcpServers']['papercusp-su'] = {
         'x-papercusp-native-session': '${PAPERCUSP_NATIVE_SESSION_ID:-}',
     },
 }
+os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, 'w') as f:
     json.dump(cfg, f, indent=2)
 PYEOF
-  chmod 600 "$CLAUDE_CONFIG_PATH"
-  echo "✓ Merged 'papercusp-su' into $CLAUDE_CONFIG_PATH (mode 0600)"
-else
-  echo "· $CLAUDE_CONFIG_PATH not found — skipping Claude Code MCP merge (launch \`claude\` once then re-run to opt in)"
-fi
+  chmod 600 "$CLAUDE_MCP_TEMPLATE_PATH"
+  echo "✓ Wrote 'papercusp-su' to $CLAUDE_MCP_TEMPLATE_PATH (mode 0600; psu sessions only)"
 
 # 3b. Disable OMP-native memory (psu-isolation P-003 / D-001). A psu session
 # uses the hybrid `memory:*` MCP tools (the papercusp-su server), NOT OMP's
@@ -1835,13 +1842,15 @@ else
   echo "! Expected CC lock hooks at $CC_HOOK_SRC_DIR; skipping (Claude/Codex lock enforcement inactive)"
 fi
 
-# 4e-hooks. Merge the SU-locks Pre/PostToolUse hooks into Claude Code's
-# USER settings (~/.claude/settings.json). User-level so both `claude`
-# and `claude-su` enforce locks; the matcher limits them to file edits,
-# and the hook itself scopes to the papercup workspace + no-ops when
-# Papercusp isn't installed.
+# 4e-hooks. Write the SU-locks Pre/PostToolUse hooks (and the rest of the Claude
+# hook set + fleet statusline) to the psu settings overlay
+# (~/.papercusp/claude-settings.json). psu merges it into each Claude session's
+# own settings.json; the user's ~/.claude/settings.json is never written, so a
+# plain `claude` runs none of these hooks. The overlay is Papercusp-owned, so it
+# is rebuilt from scratch on every run.
 if [ -x "$CC_PRE_HOOK" ]; then
-  CLAUDE_SETTINGS="${HOME}/.claude/settings.json"
+  CLAUDE_SETTINGS="${HOME}/.papercusp/claude-settings.json"
+  rm -f "$CLAUDE_SETTINGS"
   merge_lock_hooks "$CLAUDE_SETTINGS" "Edit|Write|MultiEdit|mcp__.*__capability_(edit|write|multi_?edit)"
   [ -x "$CC_ACTIVITY_HOOK" ] && merge_activity_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_WRITE_BYTE_INTEGRITY_HOOK" ] && merge_write_byte_integrity_guard_hook "$CLAUDE_SETTINGS"
@@ -1878,7 +1887,21 @@ if [ -x "$CC_PRE_HOOK" ]; then
     echo "! tsx not found under ${REPO_ROOT}/node_modules; papercusp Claude plugin not installed, hooks stay inline"
   fi
   chmod 600 "$CLAUDE_SETTINGS"
-  echo "✓ Merged SU-locks + coord + activity hooks (+ fleet statusline) into $CLAUDE_SETTINGS"
+  echo "✓ Wrote SU-locks + coord + activity hooks (+ fleet statusline) to $CLAUDE_SETTINGS (psu sessions only)"
+  # Remove what earlier versions of this script merged into the user's own settings.
+  node --input-type=module -e '
+    import { readFileSync, writeFileSync } from "node:fs";
+    const [overlayModule, settingsPath, home] = process.argv.slice(1);
+    const { stripLegacyPsuClaudeSettings } = await import(overlayModule);
+    let cfg;
+    try { cfg = JSON.parse(readFileSync(settingsPath, "utf8")); } catch { process.exit(0); }
+    const removed = stripLegacyPsuClaudeSettings(cfg, home);
+    if (removed.length) {
+      writeFileSync(settingsPath, JSON.stringify(cfg, null, 2) + "\n");
+      console.log(`✓ Removed legacy Papercusp entries from ${settingsPath}: ${removed.join(", ")}`);
+    }
+  ' "${REPO_ROOT}/packages/operator-core/lib/psu-claude-overlay.mjs" "${HOME}/.claude/settings.json" "$HOME" \
+    || echo "! Could not clean legacy Papercusp entries from ${HOME}/.claude/settings.json"
 else
   echo "· Claude lock hooks not installed (no $CC_PRE_HOOK) — skipping settings merge"
 fi
@@ -2040,8 +2063,8 @@ Done.  Profile: ${PROFILE}
     \$ psu --role=<role> --harness=<slug> [--feature=<id>]          # role-scoped session
 
   SU-locks coordination — an edit to a file another SU agent holds:
-    - Claude → Pre/PostToolUse hooks in ~/.claude/settings.json (user-level,
-      automatic — BLOCKS the edit with the holder's intent + expiry).
+    - Claude → Pre/PostToolUse hooks in each psu session's own settings.json
+      (automatic — BLOCKS the edit with the holder's intent + expiry).
     - OMP    → coord-hook.ts loaded via \`-e\` by psu's omp launch (automatic).
     - Codex  → lock PreToolUse is INERT (codex doesn't fire it on edits —
       upstream openai/codex #20204), so codex coordinates LOCKS by calling
@@ -2066,9 +2089,10 @@ Done.  Profile: ${PROFILE}
     \$ install-standalone-mcp.sh --profile=engineer   # full Papercusp-engineer playbook
     \$ install-standalone-mcp.sh --profile=power      # power-engineer subset (generic tools)
 
-The papercusp-su MCP server is registered user-level for \`omp\` + \`claude\`
-(entries in ~/.omp/agent/mcp.json and ~/.claude.json) so a raw launch sees
-the SU tools; psu adds the playbook (+ for OMP the coordination extension)
+The papercusp-su MCP server is registered user-level for \`omp\`
+(~/.omp/agent/mcp.json). For \`claude\` it lives in ~/.papercusp/claude-mcp.json
+and psu copies it into each session's own config, so a plain \`claude\` stays
+vanilla; psu adds the playbook (+ for OMP the coordination extension)
 per-launch. For Codex, psu mints a per-session CODEX_HOME with the superuser
 MCP — plain \`codex\` (CODEX_HOME=~/.codex) stays fully vanilla.
 
@@ -2095,7 +2119,8 @@ To rotate the token, delete $TOKEN_PATH and re-run. To revoke, delete:
   $PSU_PATH   (the tracked picker launcher)
   $CC_HOOK_DEST_DIR   (the shared Claude/Codex lock hooks)
   ~/.papercusp/su-codex-homes   (per-session codex homes psu minted, if any)
-  (remove the 'papercusp-su' entry from both $OMP_CONFIG_PATH and $CLAUDE_CONFIG_PATH,
-   and the SU-locks Pre/PostToolUse entries from ${HOME}/.claude/settings.json)
+  $CLAUDE_MCP_TEMPLATE_PATH   (the psu Claude MCP template)
+  ${HOME}/.papercusp/claude-settings.json   (the psu Claude hook overlay)
+  (and remove the 'papercusp-su' entry from $OMP_CONFIG_PATH)
 
 EOF

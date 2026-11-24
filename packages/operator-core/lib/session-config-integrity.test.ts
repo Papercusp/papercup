@@ -46,6 +46,8 @@ const GLOBAL_CLAUDE_JSON = {
     [PSU_MCP_SERVER]: { type: 'http', url: 'http://127.0.0.1:3070/api/mcp' },
   },
 };
+/** The psu MCP template on disk (~/.papercusp/claude-mcp.json): papercusp-su only. */
+const PSU_TEMPLATE = { mcpServers: { [PSU_MCP_SERVER]: GLOBAL_CLAUDE_JSON.mcpServers[PSU_MCP_SERVER] } };
 
 /** VERBATIM the clobbered settings.json found on disk — every psu key gone. */
 const CLOBBERED_SETTINGS = {
@@ -66,8 +68,8 @@ const HEALTHY_SETTINGS = {
 const state = (over: Partial<SessionConfigState> = {}): SessionConfigState => ({
   settings: CLOBBERED_SETTINGS,
   claudeJson: { mcpServers: {} },
-  globalSettings: GLOBAL_SETTINGS,
-  globalClaudeJson: GLOBAL_CLAUDE_JSON,
+  canonicalSettings: GLOBAL_SETTINGS,
+  canonicalClaudeJson: GLOBAL_CLAUDE_JSON,
   // WI-38349: the documents above were read from an OBSERVED dir. A state whose
   // configDir is null means "we never found the session's dir" and is a different
   // claim entirely — see the UNKNOWN describe block below.
@@ -121,7 +123,7 @@ describe('checkSessionConfigIntegrity', () => {
     const v = checkSessionConfigIntegrity(
       state({
         settings: HEALTHY_SETTINGS,
-        globalSettings: { theme: 'dark' },
+        canonicalSettings: { theme: 'dark' },
         claudeJson: { mcpServers: { [PSU_MCP_SERVER]: {} } },
       }),
     );
@@ -250,7 +252,8 @@ describe('repairSessionConfigOnDisk', () => {
   const layGlobals = () => {
     mkdirSync(join(home, '.claude'), { recursive: true });
     writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify(GLOBAL_SETTINGS, null, 2));
-    writeFileSync(join(home, '.claude.json'), JSON.stringify(GLOBAL_CLAUDE_JSON, null, 2));
+    mkdirSync(join(home, '.papercusp'), { recursive: true });
+    writeFileSync(join(home, '.papercusp', 'claude-mcp.json'), JSON.stringify(PSU_TEMPLATE, null, 2));
   };
   const laySession = (settings: unknown, claudeJson: unknown) => {
     const dir = join(home, '.papercusp', 'session-claude', SID);
@@ -337,8 +340,8 @@ describe('repairSessionConfigOnDisk', () => {
     const s = loadSessionConfigState(SID, home);
     expect(s.settings).toBeNull();
     expect(s.claudeJson).toBeNull();
-    expect(s.globalSettings).not.toBeNull();
-    expect(s.globalClaudeJson).not.toBeNull();
+    expect(s.canonicalSettings).not.toBeNull();
+    expect(s.canonicalClaudeJson).not.toBeNull();
     // WI-38349: and it says WHY they are null — no dir was observed, so the nulls are
     // about our lookup, not about the session.
     expect(s.configDir).toBeNull();
@@ -418,7 +421,8 @@ describe('WI-38349 — an unresolvable config dir is UNKNOWN, not de-enrollment'
     try {
       mkdirSync(join(home, '.claude'), { recursive: true });
       writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify(GLOBAL_SETTINGS, null, 2));
-      writeFileSync(join(home, '.claude.json'), JSON.stringify(GLOBAL_CLAUDE_JSON, null, 2));
+      mkdirSync(join(home, '.papercusp'), { recursive: true });
+      writeFileSync(join(home, '.papercusp', 'claude-mcp.json'), JSON.stringify(PSU_TEMPLATE, null, 2));
 
       const SID = 'su-never-materialized-0000';
       const res = repairSessionConfigOnDisk(SID, home, 'claude');
@@ -437,7 +441,8 @@ describe('WI-38349 — an unresolvable config dir is UNKNOWN, not de-enrollment'
     try {
       mkdirSync(join(home, '.claude'), { recursive: true });
       writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify(GLOBAL_SETTINGS, null, 2));
-      writeFileSync(join(home, '.claude.json'), JSON.stringify(GLOBAL_CLAUDE_JSON, null, 2));
+      mkdirSync(join(home, '.papercusp'), { recursive: true });
+      writeFileSync(join(home, '.papercusp', 'claude-mcp.json'), JSON.stringify(PSU_TEMPLATE, null, 2));
 
       const res = repairSessionConfigOnDisk('su-never-materialized-0001', home, 'claude');
 
@@ -489,8 +494,8 @@ describe('P-004 — a session that lost the papercusp plugin enrollment', () => 
     state({
       settings: HEALTHY_PLUGIN_SESSION,
       claudeJson: { mcpServers: { [PSU_MCP_SERVER]: GLOBAL_CLAUDE_JSON.mcpServers[PSU_MCP_SERVER] } },
-      globalSettings: PLUGIN_GLOBAL,
-      globalPluginHooks: PLUGIN_HOOKS,
+      canonicalSettings: PLUGIN_GLOBAL,
+      canonicalPluginHooks: PLUGIN_HOOKS,
       ...over,
     });
 
@@ -515,14 +520,14 @@ describe('P-004 — a session that lost the papercusp plugin enrollment', () => 
   });
 
   it('still reports the disenrollment when the plugin hooks.json could not be loaded', () => {
-    const v = checkSessionConfigIntegrity(pluginState({ settings: DISENROLLED_SESSION, globalPluginHooks: null }));
+    const v = checkSessionConfigIntegrity(pluginState({ settings: DISENROLLED_SESSION, canonicalPluginHooks: null }));
     expect(v.ok).toBe(false);
     expect(v.pluginDisenrolled).toBe(true);
   });
 
   it('never invents an enrollment when the GLOBAL settings do not enable the plugin', () => {
     const v = checkSessionConfigIntegrity(
-      pluginState({ settings: DISENROLLED_SESSION, globalSettings: { hooks: { Stop: FOREIGN_STOP } } }),
+      pluginState({ settings: DISENROLLED_SESSION, canonicalSettings: { hooks: { Stop: FOREIGN_STOP } } }),
     );
     expect(v.pluginDisenrolled).toBe(false);
     expect(v.ok).toBe(true);
@@ -553,14 +558,15 @@ describe('P-004 — a session that lost the papercusp plugin enrollment', () => 
         join(home, '.claude', 'settings.json'),
         JSON.stringify({ ...PLUGIN_GLOBAL, ...enrollment(root) }),
       );
-      writeFileSync(join(home, '.claude.json'), JSON.stringify(GLOBAL_CLAUDE_JSON));
+      mkdirSync(join(home, '.papercusp'), { recursive: true });
+      writeFileSync(join(home, '.papercusp', 'claude-mcp.json'), JSON.stringify(PSU_TEMPLATE));
       const dir = join(home, '.papercusp', 'session-claude', SID);
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, 'settings.json'), JSON.stringify(DISENROLLED_SESSION));
       writeFileSync(join(dir, '.claude.json'), JSON.stringify({ mcpServers: GLOBAL_CLAUDE_JSON.mcpServers }));
 
       const loaded = loadSessionConfigState(SID, home);
-      expect(loaded.globalPluginHooks).toEqual(PLUGIN_HOOKS);
+      expect(loaded.canonicalPluginHooks).toEqual(PLUGIN_HOOKS);
       expect(checkSessionConfigIntegrity(loaded).missingHookEvents).toEqual([
         'PreToolUse',
         'SessionStart',

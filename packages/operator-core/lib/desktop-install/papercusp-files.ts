@@ -49,6 +49,7 @@ import {
   gcStrandedInstallTmp,
 } from './install-provenance';
 import { withHookInstallLock } from './hook-install-lock';
+import { psuClaudeSettingsOverlayPath, stripLegacyPsuClaudeSettings } from '../psu-claude-overlay.mjs';
 import {
   spliceAtMarker,
   spliceToolingOverlay,
@@ -553,33 +554,22 @@ export async function renderCompactionStrategy(promptsDir: string): Promise<stri
 }
 
 /**
- * Ensure `<home>/.claude/CLAUDE.md` carries a managed `# Compact Instructions`
- * stanza that @import-s the rendered compaction-strategy.md (the Claude compaction
- * floor). Idempotent + marker-delimited so it never clobbers the owner's own
- * CLAUDE.md; re-running replaces only the managed block. Best-effort — a failure
- * never breaks the install. agent-managed-compaction-2026-07-01.
+ * Remove the managed `# Compact Instructions` stanza earlier installs appended to the user's own
+ * `<home>/.claude/CLAUDE.md`. psu never mirrors that file into a session (psu-isolation P-002 /
+ * D-001: personal memory is excluded), so the stanza only ever reached plain non-psu `claude`
+ * sessions. Only the marker-delimited block is removed; the rest of the file is kept byte for byte.
+ * Best-effort — a failure never breaks the install. Returns true when it removed the block.
  */
-async function ensureClaudeCompactImport(home: string, strategyPath: string): Promise<boolean> {
-  const claudeDir = path.join(home, '.claude');
-  const claudeMd = path.join(claudeDir, 'CLAUDE.md');
+async function removeLegacyClaudeCompactImport(home: string): Promise<boolean> {
+  const claudeMd = path.join(home, '.claude', 'CLAUDE.md');
   const BEGIN = '<!-- PAPERCUSP-COMPACTION:BEGIN (managed — do not edit) -->';
   const END = '<!-- PAPERCUSP-COMPACTION:END -->';
-  const block = `${BEGIN}\n# Compact Instructions\n\n@${strategyPath}\n${END}`;
   try {
-    await fs.mkdir(claudeDir, { recursive: true });
-    let existing = '';
-    try {
-      existing = await fs.readFile(claudeMd, 'utf8');
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-    }
-    const re = new RegExp(`${escapeRe(BEGIN)}[\\s\\S]*?${escapeRe(END)}`);
-    const next = re.test(existing)
-      ? existing.replace(re, block)
-      : existing.replace(/\n+$/, '') + (existing.trim() ? '\n\n' : '') + block + '\n';
-    if (next !== existing) {
-      await fs.writeFile(claudeMd, next, { mode: 0o644 });
-    }
+    const existing = await fs.readFile(claudeMd, 'utf8');
+    const re = new RegExp(`\\n*${escapeRe(BEGIN)}[\\s\\S]*?${escapeRe(END)}\\n?`);
+    if (!re.test(existing)) return false;
+    const next = existing.replace(re, '\n');
+    await fs.writeFile(claudeMd, next.trim() ? next.replace(/\n+$/, '\n') : '');
     return true;
   } catch {
     return false;
@@ -3629,13 +3619,38 @@ export async function checkHookSyntax(
 }
 
 /**
+ * Remove what earlier installs merged into the user's own ~/.claude/settings.json: Papercusp hook
+ * commands, the `papercusp` plugin enrollment and the fleet statusLine (`stripLegacyPsuClaudeSettings`).
+ * Every other key and hook is kept; an absent or unparseable file is left alone. Returns the removed
+ * items.
+ */
+export async function removeLegacyUserClaudeSettings(home: string): Promise<string[]> {
+  const settingsPath = path.join(home, '.claude', 'settings.json');
+  let cfg: Record<string, any>;
+  try {
+    const parsed = JSON.parse(await fs.readFile(settingsPath, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+    cfg = parsed as Record<string, any>;
+  } catch {
+    return [];
+  }
+  const removed = stripLegacyPsuClaudeSettings(cfg, home);
+  if (removed.length) {
+    // Write through a symlinked settings.json (dotfiles) rather than replacing the link.
+    await fs.writeFile(settingsPath, JSON.stringify(cfg, null, 2) + '\n');
+    console.log(`[desktop-install] removed legacy Papercusp entries from ${settingsPath}: ${removed.join(', ')}`);
+  }
+  return removed;
+}
+
+/**
  * Install the Claude/Codex CC hooks to ~/.papercusp/hooks/cc/ and merge them (+ the fleet
- * statusline) into ~/.claude/settings.json — the desktop-installer equivalent of the CC-hook block in
+ * statusline) into the psu settings overlay ~/.papercusp/claude-settings.json — the desktop-installer equivalent of the CC-hook block in
  * install-standalone-mcp.sh (EI-8191: the packaged Mac/Windows apps shipped NEITHER the sources NOR the
  * merge, so Claude rendered a blank statusline + lock/coord enforcement was silently off). Cross-platform:
  * runs under Node natively on macOS and inside the WSL distro on Windows, so both get the hooks from this
  * ONE path. Best-effort + idempotent; a missing source (hooks not shipped) degrades to "nothing
- * installed" and leaves settings.json untouched. `srcDir` = the resolved sidecar/dev hooks/cc dir.
+ * installed" and leaves the overlay untouched. `srcDir` = the resolved sidecar/dev hooks/cc dir.
  */
 export async function installClaudeHooks(
   home: string,
@@ -3811,27 +3826,11 @@ export async function installClaudeHooks(
   // Gate the settings merge on the primary lock hook landing (parity with the bash `[ -x $CC_PRE_HOOK ]`).
   if (!installed.includes('pretooluse-locks-acquire.sh')) return { installed, settingsMerged: false };
 
-  const settingsPath = path.join(home, '.claude', 'settings.json');
-  let cfg: Record<string, any> = {};
-  try {
-    const raw = await fs.readFile(settingsPath, 'utf8');
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      parsed = undefined;
-    }
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      cfg = parsed as Record<string, any>;
-    } else {
-      // Corrupt / non-object → back up then start fresh (mirrors the python except branch).
-      await fs.rename(settingsPath, `${settingsPath}.bak.${Date.now()}`).catch(() => {});
-      cfg = {};
-    }
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-    cfg = {};
-  }
+  // The hooks, plugin enrollment and fleet statusLine go into Papercusp's psu settings overlay
+  // (~/.papercusp/claude-settings.json), which psu merges into each session's own settings.json
+  // (interactive-claude-config.ts). The user's ~/.claude/settings.json is never written, so a plain
+  // `claude` runs none of these hooks; what earlier installs merged there is removed below.
+  const cfg: Record<string, any> = {};
   const present = new Set(installed);
   mergeClaudeHookSettings(cfg, destDir, { present, isClaudeSettings: true });
   // client-native-features-adoption-2026-10-21 P-004 (D-012): the generated `papercusp` Claude
@@ -3844,12 +3843,14 @@ export async function installClaudeHooks(
   });
   if (!plugin.ok) {
     console.warn(
-      `[desktop-install] papercusp Claude plugin not installed (${plugin.error}); hooks stay inline in settings.json`,
+      `[desktop-install] papercusp Claude plugin not installed (${plugin.error}); hooks stay inline in the psu settings overlay`,
     );
   }
-  await fs.mkdir(path.dirname(settingsPath), { recursive: true });
-  await fs.writeFile(settingsPath, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
-  await fs.chmod(settingsPath, 0o600);
+  const overlayPath = psuClaudeSettingsOverlayPath(home);
+  await fs.mkdir(path.dirname(overlayPath), { recursive: true });
+  await fs.writeFile(overlayPath, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
+  await fs.chmod(overlayPath, 0o600);
+  await removeLegacyUserClaudeSettings(home);
   return { installed, settingsMerged: true, plugin };
 }
 
@@ -4255,16 +4256,17 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   const codexStatusLine = await installCodexStatusLine(home);
 
   // agent-managed-compaction: render the Claude compaction floor (base + claude overlay)
-  // to ~/.papercusp/compaction-strategy.md and @import it from ~/.claude/CLAUDE.md's
-  // `# Compact Instructions` (the only supported persistent Claude compaction hook).
-  // Best-effort; never blocks install. The compaction .md files sit beside the playbook.
+  // to ~/.papercusp/compaction-strategy.md. It is no longer @imported from the user's own
+  // ~/.claude/CLAUDE.md: psu sessions never load that file, so the import only changed plain
+  // `claude` sessions. Remove the stanza earlier installs left there. Best-effort; never
+  // blocks install. The compaction .md files sit beside the playbook.
   let compactionStrategyWritten = false;
+  await removeLegacyClaudeCompactImport(home);
   if (playbookSource) {
     const strategy = await renderCompactionStrategy(path.dirname(playbookSource));
     if (strategy) {
       await fs.writeFile(paths.compactionStrategyPath, strategy + '\n', { mode: 0o644 });
       compactionStrategyWritten = true;
-      await ensureClaudeCompactImport(home, paths.compactionStrategyPath);
     }
   }
 

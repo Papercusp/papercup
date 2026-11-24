@@ -522,16 +522,16 @@ export function roleLaunchArgs(backend: string, { promptFile, mcpJsonPath, coord
  * `roleLaunchArgs`: same raw backends, but the prompt is the engineer
  * playbook (`buildLaunchSpec({kind:'su'})`).
  *
- * MCP is USER-LEVEL for claude + omp and survives a raw launch (the Phase 0
- * finding) — claude's `papercusp-su` lives in `~/.claude.json` (its url
- * env-expands `${PAPERCUSP_SID}`, so per-session identity flows once psu
- * exports the SID), omp's in `~/.omp/agent/mcp.json`. So psu supplies NO
- * `--mcp-config`: it would double the `papercusp-su` server. This also
- * realizes D-005 (su keeps its FULL toolkit — every user server loads, not
- * just papercusp) more directly than `--mcp-config` + non-strict would.
- *
- * Lock-hook enforcement is likewise USER-LEVEL for claude (Pre/PostToolUse
- * in `~/.claude/settings.json`); omp loads it as a module via `-e`
+ * claude's `papercusp-su` MCP and lock hooks come from the session's own
+ * CLAUDE_CONFIG_DIR (interactive-claude-config.ts): its `.claude.json` copy
+ * carries the server from `~/.papercusp/claude-mcp.json`, resolved against the
+ * launch env (materializePsuClaudeMcpConfig), and its `settings.json` copy
+ * carries the hooks from `~/.papercusp/claude-settings.json`. Neither lives in
+ * the user's own `~/.claude.json` / `~/.claude/settings.json`, so a plain
+ * `claude` loads no Papercusp tools or hooks. The copies keep every user
+ * server, which realizes D-005 (su keeps its FULL toolkit), so psu passes no
+ * `--mcp-config`. omp's `papercusp-su` is user-level (`~/.omp/agent/mcp.json`);
+ * omp loads lock enforcement as a module via `-e`
  * (P-021, `~/.papercusp/papercusp-coord.ts`). codex is the only one whose
  * MCP + hooks are NOT user-level — it has no --mcp-config/-e/-prompt flag,
  * so a per-session CODEX_HOME is minted server-side (P-030: AGENTS.md =
@@ -696,7 +696,8 @@ export function resumeKickoffText(args: any, env?: NodeJS.ProcessEnv): any;
  * caller via env — derived from the session id, which still holds that
  * session's history).
  *
- * MCP + (claude) lock hooks are user-level → survive a raw resume. omp re-adds
+ * claude's MCP + lock hooks live in the session's CLAUDE_CONFIG_DIR and omp's MCP is
+ * user-level → both survive a raw resume. omp re-adds
  * the coordination extension via `-e <coordExtPath>` (per-invocation, not saved
  * in the thread). codex re-supplies its bypass flags; its hooks/MCP live in the
  * CODEX_HOME the caller points at.
@@ -1634,7 +1635,7 @@ export function applyOmpOperatorBearer(mcpJsonText: any, bearer: any): any;
 /**
  * EI-28843330270014450: reconnect can consume Claude's MCP URL verbatim.
  * Materialize the current launch environment into this owner's isolated copy,
- * keeping the global template available for the next launch or carry-respawn.
+ * keeping Papercusp's template unresolved for the next launch or carry-respawn.
  */
 export function materializePsuClaudeMcpConfig(env: any, { home }?: {
     home?: string | undefined;
@@ -1874,7 +1875,7 @@ export function gatewayPinEnv(account: string, provider?: string, ownerId?: stri
  * account. So never emit '' / null / `default` on a path whose intent is "the machine's own login":
  * emit `system`. (That is why the picker's default row carries `system`.)
  */
-export function accountRoutingMode(value: any): "pin" | "default" | "auto";
+export function accountRoutingMode(value: any): "auto" | "pin" | "default";
 /**
  * Return whether raw Codex auth.json content contains a usable ChatGPT access
  * token. Pure and secret-free: this only parses the shape needed by the Codex
@@ -2576,7 +2577,7 @@ export function preflightWindowGuard({ personaBytes, contextSize, model, agent, 
     agent?: string | undefined;
     budget?: null | undefined;
 }): {
-    level: "refuse" | "ok" | "warn";
+    level: "ok" | "warn" | "refuse";
     pct: number;
     estTokens: number;
     window: number;
@@ -2628,7 +2629,7 @@ export function runLaunchPreflight({ promptFile, contextSize, model, agent, budg
     budget?: null | undefined;
     force: any;
 }): {
-    level: "refuse" | "ok" | "warn";
+    level: "ok" | "warn" | "refuse";
     pct: number;
     estTokens: number;
     window: number;
@@ -3444,7 +3445,8 @@ export function applyHeadlessCodexBrowserPolicy(env: any): any;
  * not just coord-inbox.
  *
  * A Claude psu session receives several capabilities purely through hooks
- * merged into the global `~/.claude/settings.json` (coord-inbox mid-turn
+ * in the psu settings overlay `~/.papercusp/claude-settings.json`, copied into
+ * the session's own settings.json (coord-inbox mid-turn
  * mail; the turn-start memory delta — see memory-delivery-unification-
  * 2026-07-12 P-003a). That wiring is re-merged at every OPERATOR boot
  * (host-bootstrap → installPapercuspFiles), but it can drift BETWEEN boots —
@@ -3503,8 +3505,9 @@ export function ensureClaudePluginRails(env: any, { settingsPath, readFile, repa
 /** Re-run the operator's idempotent hook install (the same merge every operator
  *  boot runs). Loopback-only; short timeout; failure is left to the caller's
  *  re-verify. */
-export function repairCcHooksViaInstallRoute(settingsPath: any, env: any, { globalPath, install, }?: {
-    globalPath?: string | undefined;
+export function repairCcHooksViaInstallRoute(settingsPath: any, env: any, { overlayPath, userClaudeDir, install, }?: {
+    overlayPath?: string | undefined;
+    userClaudeDir?: string | undefined;
     install?: (() => import("child_process").SpawnSyncReturns<string>) | undefined;
 }): void;
 export function ensureCcHookEnrollment(env: any, { event, hookName, label, degradedNote, readFile, scriptExists, repair, log }: {
@@ -4976,8 +4979,8 @@ export const NATIVE_DEADWEIGHT_DENY_FLAG: "--disallowedTools=Artifact,DesignSync
  * papercusp-su, because the CLI attaches Chrome from the paired extension
  * (`claudeInChromeDefaultEnabled` / `cachedChromeExtensionInstalled` in ~/.claude.json).
  * Strict mode filters CONFIGURED servers, so it would not have removed chrome — and it
- * would have stopped loading the user-level papercusp-su, which psu depends on (no
- * --mcp-config is passed precisely because that server is user-level; see suLaunchArgs).
+ * would have stopped loading the user's own MCP servers, which an su session keeps
+ * (D-005; papercusp-su comes from the session's own .claude.json copy, see suLaunchArgs).
  * It was the riskier lever AND the ineffective one.
  *
  * ⚠ WHY NOT the user-level toggle — flipping `claudeInChromeDefaultEnabled` in

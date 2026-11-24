@@ -167,23 +167,23 @@ describe('ensureClaudePluginRails (P-004 launch guard)', () => {
       mkdirSync(owner); mkdirSync(child);
       mkdirSync(join(root, 'plugins/papercusp/hooks'), { recursive: true });
       writeFileSync(join(root, 'plugins/papercusp/hooks/hooks.json'), JSON.stringify({ hooks: pluginHooks }));
-      const globalPath = join(owner, 'settings.json');
+      const overlayPath = join(owner, 'claude-settings.json');
       const settingsPath = join(child, 'settings.json');
       const global = { ...enrollment(), extraKnownMarketplaces: {
         'papercusp-local': { source: { source: 'directory', path: root } },
       } };
-      writeFileSync(globalPath, JSON.stringify(global));
+      writeFileSync(overlayPath, JSON.stringify(global));
       const foreign = { type: 'command', command: '/foreign/keep.sh' };
       writeFileSync(settingsPath, JSON.stringify({ ...enrollment(false), idleCompaction: false,
         model: 'session-model', disableAllHooks: true, enabledPlugins: { 'other@market': true },
         hooks: { PreToolUse: [{ hooks: [...pluginHooks.PreToolUse![0]!.hooks, foreign] }] },
       }));
-      const before = readFileSync(globalPath, 'utf8');
+      const before = readFileSync(overlayPath, 'utf8');
       const install = vi.fn();
-      repairCcHooksViaInstallRoute(settingsPath, {}, { globalPath, install });
+      repairCcHooksViaInstallRoute(settingsPath, {}, { overlayPath, userClaudeDir: join(dir, 'user-claude'), install });
       const repaired = JSON.parse(readFileSync(settingsPath, 'utf8'));
       expect(install).toHaveBeenCalledOnce();
-      expect(readFileSync(globalPath, 'utf8')).toBe(before);
+      expect(readFileSync(overlayPath, 'utf8')).toBe(before);
       expect(repaired).toMatchObject({ idleCompaction: false, model: 'session-model', disableAllHooks: false,
         enabledPlugins: { 'other@market': true, 'papercusp@papercusp-local': true } });
       expect(repaired.hooks.PreToolUse).toEqual([{ hooks: [foreign] }]);

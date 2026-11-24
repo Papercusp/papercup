@@ -184,7 +184,7 @@ function startPackagedMcpProxy(): void {
     );
     if (!hasPackagedEntry) {
       // A hot-patched serve.mjs on a pre-WI-3247 install has no mcp-proxy.mjs
-      // beside it — but ~/.claude.json's desktop registration already bakes the
+      // beside it — but the psu Claude MCP template already bakes the
       // ${PAPERCUSP_OPERATOR_URL:-http://127.0.0.1:<port>} fallback, so leaving
       // the port dark turns every claude launched without that env into a dead
       // MCP door ("tools fetch failed" — owner-hit live on the mac VM,
@@ -1519,25 +1519,20 @@ export function runBootstrap(): void {
         console.log(
           `[desktop-install] papercusp-files ok (${minted}; playbook=${r.playbookWritten} ext=${r.extensionWritten})`,
         );
-        // Register the user-level `papercusp-su` MCP into ~/.claude.json so a
-        // desktop `psu → claude` session actually has its tools. Nothing else in
-        // the cross-platform desktop boot did this (the omp/claude MCP merge sat
-        // only in the Linux-only ensureOmpSuInstalled), which is why a mac user
-        // hit "MCP tools aren't up". Reads the token + agent-id installPapercuspFiles
-        // just minted; the env-interpolated url self-heals across the dynamic
-        // operator port (psu exports PAPERCUSP_OPERATOR_URL). Best-effort, no-ops
-        // cleanly when claude was never launched (~/.claude.json absent).
+        // Write the papercusp-su template psu copies into each Claude session's
+        // own config (~/.papercusp/claude-mcp.json), so a desktop `psu → claude`
+        // session has its tools, and remove the user-level entry earlier installs
+        // put in ~/.claude.json. Nothing else in the cross-platform desktop boot did
+        // this (the omp/claude merge sat only in the Linux-only ensureOmpSuInstalled).
+        // Reads the token + agent-id installPapercuspFiles just minted; the
+        // env-interpolated url follows the dynamic operator port (psu exports
+        // PAPERCUSP_OPERATOR_URL). Best-effort.
         try {
           const { installClaudeIntegration } = await import(
             '@papercusp/operator-core/lib/desktop-install/claude-integration'
           );
-          // seedIfAbsent (WI-3091): on a DESKTOP clean install, CREATE a minimal
-          // ~/.claude.json carrying papercusp-su when claude has never run, so the
-          // first psu→claude session already has its MCP tools (the boot reconcile
-          // otherwise no-ops because the file is still absent, then claude creates
-          // it empty inside the session → zero tools, never self-heals).
-          const c = await installClaudeIntegration({ seedIfAbsent: true });
-          if (c.changed) console.log('[desktop-install] claude MCP ok (registered papercusp-su in ~/.claude.json)');
+          const c = await installClaudeIntegration();
+          if (c.changed) console.log(`[desktop-install] claude MCP ok (${c.actions.join('; ')})`);
           else if (c.reason) console.log(`[desktop-install] claude MCP skipped (${c.reason})`);
         } catch (e) {
           console.warn('[desktop-install] claude MCP registration failed:', (e as Error)?.message ?? e);

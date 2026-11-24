@@ -132,7 +132,9 @@ describe('installPapercuspFiles', () => {
       expect(result.claudeHooksInstalled).toContain('pretooluse-locks-acquire.sh');
       expect(result.claudeSettingsMerged).toBe(true);
       await expect(fs.stat(path.join(tmpHome, '.papercusp', 'hooks', 'cc', 'pretooluse-locks-acquire.sh'))).resolves.toBeTruthy();
-      await expect(fs.stat(path.join(tmpHome, '.claude', 'settings.json'))).resolves.toBeTruthy();
+      // Enrolled in the psu overlay only; the user's own settings.json is never created.
+      await expect(fs.stat(path.join(tmpHome, '.papercusp', 'claude-settings.json'))).resolves.toBeTruthy();
+      await expect(fs.stat(path.join(tmpHome, '.claude', 'settings.json'))).rejects.toBeTruthy();
     } finally {
       error.mockRestore();
     }
@@ -870,9 +872,11 @@ describe('installPapercuspFiles', () => {
       expect(result.claudeHooksInstalled).toContain('userpromptsubmit-memory.sh');
       expect(result.claudeSettingsMerged).toBe(true);
       expect(result.extensionWritten).toBe(true);
-      const settings = JSON.parse(await fs.readFile(path.join(tmpHome, '.claude', 'settings.json'), 'utf8'));
+      // The hooks are enrolled in the psu overlay (psu sessions only), never in ~/.claude/settings.json.
+      await expect(fs.stat(path.join(tmpHome, '.claude', 'settings.json'))).rejects.toBeTruthy();
+      const settings = JSON.parse(await fs.readFile(path.join(tmpHome, '.papercusp', 'claude-settings.json'), 'utf8'));
       // client-native-features-adoption-2026-10-21 P-004 (D-012): the hook ships in the generated
-      // papercusp Claude plugin, which settings.json enables; it is no longer enrolled inline.
+      // papercusp Claude plugin, which the overlay enables; it is no longer enrolled inline.
       const pluginHooks = JSON.parse(
         await fs.readFile(
           path.join(tmpHome, '.papercusp', 'claude-plugins', 'plugins', 'papercusp', 'hooks', 'hooks.json'),

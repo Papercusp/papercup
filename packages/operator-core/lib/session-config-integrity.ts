@@ -41,8 +41,9 @@
  * self-latching, and an agent that does not know it is running without edit locks, without
  * an inbox, and without recall cannot act on any of it. Silence is the actual bug.
  *
- * The global ~/.claude/settings.json is the canonical hook block (writeSessionSettings
- * copies it in at materialize). We diff the session against it rather than hard-coding a
+ * The canonical hook block is the user's ~/.claude/settings.json plus the psu overlay
+ * (~/.papercusp/claude-settings.json), the same merge writeSessionSettings copies in at
+ * materialize. We diff the session against it rather than hard-coding a
  * hook list — a hand-copied list is exactly what rotted in EI-10793.
  *
  * WI-4617 — CLIENT AWARENESS. The failure mode above is a CLAUDE-CODE-SPECIFIC bug
@@ -51,7 +52,7 @@
  * `hooks.json` alongside it (see `role-codex-home.ts`). A Codex session materialized
  * by psu therefore has NO `~/.papercusp/session-claude/<ownerId>/` directory at all —
  * both `settings.json` and `.claude.json` reads return null, and the Claude-shaped
- * checker (globalSettings-hook-events minus sessionSettings-hook-events) reported
+ * checker (canonicalSettings-hook-events minus sessionSettings-hook-events) reported
  * EVERY globally-defined hook missing plus the PSU MCP server absent. The result: a
  * healthy Codex session got a red configIntegrity block claiming its edit-locks,
  * coord inbox, and coord MCP were all dead — a spurious diagnosis of a bug that
@@ -83,6 +84,11 @@ import {
 
 import { PSU_MCP_SERVER } from './papercusp-mcp-servers';
 import {
+  applyPsuClaudeSettingsOverlay,
+  readPsuClaudeMcpEntry,
+  readPsuClaudeSettingsOverlay,
+} from './psu-claude-overlay.mjs';
+import {
   PAPERCUSP_CLAUDE_MARKETPLACE_NAME,
   PAPERCUSP_CLAUDE_PLUGIN_HOOKS_RELPATH,
   PAPERCUSP_CLAUDE_PLUGIN_ID,
@@ -102,10 +108,12 @@ export interface SessionConfigState {
   settings: Record<string, unknown> | null;
   /** The session's .claude.json (null = unreadable/absent). */
   claudeJson: Record<string, unknown> | null;
-  /** The user's global ~/.claude/settings.json — the canonical hook block. */
-  globalSettings: Record<string, unknown> | null;
-  /** The user's global ~/.claude.json — the canonical MCP server definitions. */
-  globalClaudeJson: Record<string, unknown> | null;
+  /** The settings a psu session should carry: the user's ~/.claude/settings.json plus the
+   *  psu overlay (~/.papercusp/claude-settings.json) — the canonical hook block. */
+  canonicalSettings: Record<string, unknown> | null;
+  /** `{ mcpServers: { 'papercusp-su': … } }` from the psu template
+   *  (~/.papercusp/claude-mcp.json) — the canonical MCP server definition. */
+  canonicalClaudeJson: Record<string, unknown> | null;
   /**
    * WI-38349 — the directory `settings`/`claudeJson` were read FROM, and how it was
    * found. `null` means the session's real config dir could not be OBSERVED, so the
@@ -118,13 +126,13 @@ export interface SessionConfigState {
   configDirUnresolvedReason: string | null;
   /**
    * client-native-features-adoption-2026-10-21 P-004 (D-012): the `hooks` map of the
-   * papercusp Claude plugin that the GLOBAL settings enable, read from the global
-   * marketplace's `hooks.json`. Those hooks are no longer listed inline in the global
+   * papercusp Claude plugin that the canonical settings enable, read from the
+   * marketplace's `hooks.json`. Those hooks are no longer listed inline in the canonical
    * `hooks` block, so this is what the diff compares the session against when the session
-   * lost its plugin enrollment. `null`/absent = not enabled globally, or not loaded; then the
+   * lost its plugin enrollment. `null`/absent = not enabled canonically, or not loaded; then the
    * enrollment itself is still compared (`pluginDisenrolled`), only the per-event list is not.
    */
-  globalPluginHooks?: Record<string, unknown> | null;
+  canonicalPluginHooks?: Record<string, unknown> | null;
 }
 
 export interface ConfigIntegrityVerdict {
@@ -142,13 +150,13 @@ export interface ConfigIntegrityVerdict {
   /** Why the check could not run. Non-null exactly when `unknown` is true. */
   unknownReason: string | null;
   /**
-   * Hook events present in the global block but MISSING from the session (e.g. ['PreToolUse']).
+   * Hook events present in the canonical block but MISSING from the session (e.g. ['PreToolUse']).
    * Both sides count the hooks of an ENABLED papercusp plugin, so an event the plugin carries
    * is missing when the session lost the plugin's enrollment.
    */
   missingHookEvents: string[];
   /**
-   * The global settings enable the papercusp Claude plugin (P-004, D-012) but the session's
+   * The canonical settings enable the papercusp Claude plugin (P-004, D-012) but the session's
    * settings no longer do: `enabledPlugins["papercusp@papercusp-local"]` or the
    * `extraKnownMarketplaces["papercusp-local"]` declaration is gone. Every hook the plugin
    * carries is then dead for the session.
@@ -230,27 +238,27 @@ export function checkSessionConfigIntegrity(state: SessionConfigState): ConfigIn
     };
   }
   const pluginHooks =
-    state.globalPluginHooks && typeof state.globalPluginHooks === 'object' ? (state.globalPluginHooks as HookMap) : null;
-  const globalHooks = effectiveHooksOf(state.globalSettings, pluginHooks);
+    state.canonicalPluginHooks && typeof state.canonicalPluginHooks === 'object' ? (state.canonicalPluginHooks as HookMap) : null;
+  const canonicalHooks = effectiveHooksOf(state.canonicalSettings, pluginHooks);
   const sessionHooks = effectiveHooksOf(state.settings, pluginHooks);
-  // P-004 (D-012): only a concern when the global enrolls the plugin — never invent one.
-  const pluginDisenrolled = papercuspPluginLive(state.globalSettings) && !papercuspPluginLive(state.settings);
+  // P-004 (D-012): only a concern when the canonical settings enroll the plugin — never invent one.
+  const pluginDisenrolled = papercuspPluginLive(state.canonicalSettings) && !papercuspPluginLive(state.settings);
 
-  const missingHookEvents = Object.keys(globalHooks)
-    .filter((event) => hasHookEvent(globalHooks, event))
+  const missingHookEvents = Object.keys(canonicalHooks)
+    .filter((event) => hasHookEvent(canonicalHooks, event))
     .filter((event) => !hasHookEvent(sessionHooks, event))
     .sort();
 
-  const globalServers =
-    state.globalClaudeJson && typeof state.globalClaudeJson.mcpServers === 'object'
-      ? ((state.globalClaudeJson.mcpServers as Record<string, unknown>) ?? {})
+  const canonicalServers =
+    state.canonicalClaudeJson && typeof state.canonicalClaudeJson.mcpServers === 'object'
+      ? ((state.canonicalClaudeJson.mcpServers as Record<string, unknown>) ?? {})
       : {};
   const sessionServers =
     state.claudeJson && typeof state.claudeJson.mcpServers === 'object'
       ? ((state.claudeJson.mcpServers as Record<string, unknown>) ?? {})
       : {};
-  // Only a concern when the global actually defines it — otherwise there is nothing to restore.
-  const mcpServerMissing = Boolean(globalServers[PSU_MCP_SERVER]) && !sessionServers[PSU_MCP_SERVER];
+  // Only a concern when the template actually defines it — otherwise there is nothing to restore.
+  const mcpServerMissing = Boolean(canonicalServers[PSU_MCP_SERVER]) && !sessionServers[PSU_MCP_SERVER];
 
   const perms =
     state.settings && typeof state.settings.permissions === 'object'
@@ -382,20 +390,26 @@ export function loadSessionConfigState(
       procRoot: locator.procRoot,
     });
   const dir = resolution.dir;
-  const globalSettings = readJson(join(realHome, '.claude', 'settings.json'));
+  // The canonical documents a psu session should carry: the user's settings plus the psu
+  // overlay, and the papercusp-su template. Papercusp keeps both in its own home; the user's
+  // ~/.claude.json and ~/.claude/settings.json never carry them (psu-claude-overlay.mjs).
+  const userSettings = readJson(join(realHome, '.claude', 'settings.json'));
+  const overlay = readPsuClaudeSettingsOverlay(realHome);
+  const canonicalSettings = userSettings || overlay ? applyPsuClaudeSettingsOverlay(userSettings ?? {}, overlay) : null;
+  const template = readPsuClaudeMcpEntry(realHome);
   // P-004 (D-012): the plugin is read from its marketplace SOURCE folder, so that is the
-  // hooks.json the global enrollment actually runs.
-  const marketplaceRoot = papercuspMarketplaceRoot(globalSettings);
+  // hooks.json the enrollment actually runs.
+  const marketplaceRoot = papercuspMarketplaceRoot(canonicalSettings);
   const pluginDoc = marketplaceRoot ? readJson(join(marketplaceRoot, PAPERCUSP_CLAUDE_PLUGIN_HOOKS_RELPATH)) : null;
   return {
     settings: dir ? readJson(join(dir, 'settings.json')) : null,
     claudeJson: dir ? readJson(join(dir, '.claude.json')) : null,
-    globalSettings,
-    globalClaudeJson: readJson(join(realHome, '.claude.json')),
+    canonicalSettings,
+    canonicalClaudeJson: template ? { mcpServers: { [PSU_MCP_SERVER]: template } } : null,
     configDir: dir,
     configDirSource: resolution.source,
     configDirUnresolvedReason: resolution.unresolvedReason,
-    globalPluginHooks: pluginDoc && typeof pluginDoc.hooks === 'object' && pluginDoc.hooks ? (pluginDoc.hooks as HookMap) : null,
+    canonicalPluginHooks: pluginDoc && typeof pluginDoc.hooks === 'object' && pluginDoc.hooks ? (pluginDoc.hooks as HookMap) : null,
   };
 }
 
@@ -409,7 +423,7 @@ export interface SessionConfigRepair {
 }
 
 /**
- * Compute the non-destructive repair: re-merge the psu-owned keys from the global
+ * Compute the non-destructive repair: re-merge the psu-owned keys from the canonical
  * documents, PRESERVING every foreign key (model, theme, effortLevel, … — the keys
  * Claude Code legitimately owns). Pure; the caller writes the files.
  *
@@ -429,16 +443,16 @@ export function computeSessionConfigRepair(state: SessionConfigState): SessionCo
     state.settings &&
     (verdict.missingHookEvents.length > 0 || verdict.pluginDisenrolled || verdict.permissionsDowngraded)
   ) {
-    // Inline restore uses the global INLINE block only. A plugin-carried event comes back by
+    // Inline restore uses the canonical INLINE block only. A plugin-carried event comes back by
     // re-enrolling the plugin below — an inline copy as well would fire it twice (D-012).
-    const globalHooks = hooksOf(state.globalSettings);
+    const canonicalHooks = hooksOf(state.canonicalSettings);
     const pluginHooks =
-      state.globalPluginHooks && typeof state.globalPluginHooks === 'object' ? (state.globalPluginHooks as HookMap) : {};
+      state.canonicalPluginHooks && typeof state.canonicalPluginHooks === 'object' ? (state.canonicalPluginHooks as HookMap) : {};
     const nextHooks: HookMap = { ...hooksOf(state.settings) };
     let inlineRestored = false;
     for (const event of verdict.missingHookEvents) {
-      if (hasHookEvent(globalHooks, event)) {
-        nextHooks[event] = globalHooks[event];
+      if (hasHookEvent(canonicalHooks, event)) {
+        nextHooks[event] = canonicalHooks[event];
         inlineRestored = true;
         fixed.push(`hooks.${event}`);
       } else if (verdict.pluginDisenrolled && hasHookEvent(pluginHooks, event)) {
@@ -448,15 +462,15 @@ export function computeSessionConfigRepair(state: SessionConfigState): SessionCo
     const next: Record<string, unknown> = { ...state.settings };
     settings = next;
     if (inlineRestored) next.hooks = nextHooks;
-    if (verdict.pluginDisenrolled && state.globalSettings) {
-      // pluginDisenrolled implies the global declares the marketplace (papercuspPluginLive).
+    if (verdict.pluginDisenrolled && state.canonicalSettings) {
+      // pluginDisenrolled implies the canonical settings declare the marketplace (papercuspPluginLive).
       const own = (key: string): Record<string, unknown> =>
         typeof next[key] === 'object' && next[key] ? (next[key] as Record<string, unknown>) : {};
-      const globalMarketplaces = state.globalSettings.extraKnownMarketplaces as Record<string, unknown>;
+      const canonicalMarketplaces = state.canonicalSettings.extraKnownMarketplaces as Record<string, unknown>;
       next.enabledPlugins = { ...own('enabledPlugins'), [PAPERCUSP_CLAUDE_PLUGIN_ID]: true };
       next.extraKnownMarketplaces = {
         ...own('extraKnownMarketplaces'),
-        [PAPERCUSP_CLAUDE_MARKETPLACE_NAME]: globalMarketplaces[PAPERCUSP_CLAUDE_MARKETPLACE_NAME],
+        [PAPERCUSP_CLAUDE_MARKETPLACE_NAME]: canonicalMarketplaces[PAPERCUSP_CLAUDE_MARKETPLACE_NAME],
       };
       fixed.push(`enabledPlugins.${PAPERCUSP_CLAUDE_PLUGIN_ID}`);
     }
@@ -469,8 +483,8 @@ export function computeSessionConfigRepair(state: SessionConfigState): SessionCo
       fixed.push('permissions.defaultMode');
     }
     // enableAllProjectMcpServers / statusLine are psu-materialized too; restore from
-    // global only when the global HAS them (never invent a foreign statusLine).
-    const g = state.globalSettings;
+    // the canonical settings only when they HAVE them (never invent a foreign statusLine).
+    const g = state.canonicalSettings;
     if (g && settings.enableAllProjectMcpServers === undefined && g.enableAllProjectMcpServers !== undefined) {
       settings.enableAllProjectMcpServers = g.enableAllProjectMcpServers;
       fixed.push('enableAllProjectMcpServers');
@@ -482,7 +496,7 @@ export function computeSessionConfigRepair(state: SessionConfigState): SessionCo
   }
 
   if (state.claudeJson && verdict.mcpServerMissing) {
-    const globalServers = (state.globalClaudeJson?.mcpServers ?? {}) as Record<string, unknown>;
+    const canonicalServers = (state.canonicalClaudeJson?.mcpServers ?? {}) as Record<string, unknown>;
     const sessionServers =
       typeof state.claudeJson.mcpServers === 'object' && state.claudeJson.mcpServers
         ? (state.claudeJson.mcpServers as Record<string, unknown>)
@@ -490,7 +504,7 @@ export function computeSessionConfigRepair(state: SessionConfigState): SessionCo
     claudeJson = {
       ...state.claudeJson,
       // ONLY the psu server — never re-add `playwright`, which P-020 prunes on purpose.
-      mcpServers: { ...sessionServers, [PSU_MCP_SERVER]: globalServers[PSU_MCP_SERVER] },
+      mcpServers: { ...sessionServers, [PSU_MCP_SERVER]: canonicalServers[PSU_MCP_SERVER] },
     };
     fixed.push(`mcpServers.${PSU_MCP_SERVER}`);
   }

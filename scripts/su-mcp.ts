@@ -44,7 +44,7 @@
  *   tsx scripts/su-mcp.ts work_items:create '{"kind":"task","title":"x","harness":"papercusp","assign_to":"su-…"}' --client=su-…
  *
  * Config: the bearer + base URL are read from the `papercusp-su` server block in
- * ~/.claude.json (so it stays in sync if the token rotates — NO secret is baked
+ * ~/.papercusp/claude-mcp.json (so it stays in sync if the token rotates — NO secret is baked
  * into this file). Override with PAPERCUSP_MCP_URL + PAPERCUSP_MCP_BEARER.
  */
 import { readFileSync } from 'node:fs';
@@ -58,8 +58,7 @@ interface ServerCfg {
   headers?: { Authorization?: string };
 }
 
-/** Recursively find the `papercusp-su` MCP server block anywhere in ~/.claude.json
- *  (it can live under top-level mcpServers or a projects[cwd].mcpServers map). */
+/** Recursively find the `papercusp-su` MCP server block anywhere in a Claude config document. */
 function findServer(node: unknown): ServerCfg | null {
   if (!node || typeof node !== 'object') return null;
   const obj = node as Record<string, unknown>;
@@ -81,11 +80,13 @@ function loadConfig(): { base: string; bearer: string } {
     const u = new URL(envUrl);
     return { base: `${u.protocol}//${u.host}${u.pathname}`, bearer: envBearer };
   }
-  const raw = readFileSync(join(homedir(), '.claude.json'), 'utf8');
+  // psu's Claude template (~/.papercusp/claude-mcp.json); Papercusp no longer
+  // registers the server in the user's ~/.claude.json.
+  const raw = readFileSync(join(homedir(), '.papercusp', 'claude-mcp.json'), 'utf8');
   const srv = findServer(JSON.parse(raw));
   if (!srv) {
     throw new Error(
-      'papercusp-su server not found in ~/.claude.json — set PAPERCUSP_MCP_URL + PAPERCUSP_MCP_BEARER to override.',
+      'papercusp-su server not found in ~/.papercusp/claude-mcp.json — set PAPERCUSP_MCP_URL + PAPERCUSP_MCP_BEARER to override.',
     );
   }
   const u = new URL(srv.url);

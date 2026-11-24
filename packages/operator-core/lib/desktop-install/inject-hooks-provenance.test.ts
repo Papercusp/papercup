@@ -206,15 +206,18 @@ describe('installInjectionHooks — install provenance', () => {
       .toEqual(await fs.readFile(path.join(ccSource, name)));
     for (const name of ['core.mjs', 'delivery-ledger.mjs']) expect(await fs.readFile(path.join(injectDest(), name)))
       .toEqual(await fs.readFile(path.join(hookSources, 'inject', name)));
-    const settings = JSON.parse(await fs.readFile(path.join(home, '.claude/settings.json'), 'utf8'));
-    expect(settings.hooks.PostToolUse).toEqual([foreign]);
+    // The user's own settings keep only their foreign hook; Papercusp's go to the psu overlay.
+    const userSettings = JSON.parse(await fs.readFile(path.join(home, '.claude/settings.json'), 'utf8'));
+    expect(userSettings.hooks.PostToolUse).toEqual([foreign]);
+    expect(userSettings.enabledPlugins?.['papercusp@papercusp-local']).toBeUndefined();
+    const settings = JSON.parse(await fs.readFile(path.join(home, '.papercusp/claude-settings.json'), 'utf8'));
     // client-native-features-adoption-2026-10-21 P-004 (D-012): papercusp hooks ship in the generated
     // Claude plugin that settings.json enables; the inline settings copy is stripped.
     const pluginHooks = JSON.parse(await fs.readFile(
       path.join(home, '.papercusp/claude-plugins/plugins/papercusp/hooks/hooks.json'), 'utf8')).hooks;
     expect(JSON.stringify(pluginHooks.PostToolBatch)).toContain('posttoolbatch-midturn-context.sh');
     expect(settings.enabledPlugins?.['papercusp@papercusp-local']).toBe(true);
-    expect(JSON.stringify(settings.hooks.PostToolBatch ?? [])).not.toContain('posttoolbatch-midturn-context.sh');
+    expect(JSON.stringify(settings.hooks?.PostToolBatch ?? [])).not.toContain('posttoolbatch-midturn-context.sh');
 
     const base = 'a'.repeat(40);
     const checks = [

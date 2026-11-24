@@ -143,7 +143,14 @@ export async function readSessionRestriction(
 export function isAgentRuntimePath(absPath: string, home: string = homedir()): boolean {
   const p = resolve(absPath);
   const under = (root: string) => p === root || p.startsWith(`${root}${sep}`);
-  if (under(join(home, '.claude')) || p === join(home, '.claude.json') || under(join(home, '.papercusp', 'hooks'))) {
+  if (
+    under(join(home, '.claude')) ||
+    p === join(home, '.claude.json') ||
+    under(join(home, '.papercusp', 'hooks')) ||
+    // The psu Claude MCP template and settings overlay (psu-claude-overlay.mjs).
+    p === join(home, '.papercusp', 'claude-mcp.json') ||
+    p === join(home, '.papercusp', 'claude-settings.json')
+  ) {
     return true;
   }
   const parts = p.split(sep);

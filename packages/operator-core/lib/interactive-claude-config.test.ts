@@ -54,6 +54,8 @@ let home: string; // a fake source HOME with a populated ~/.claude
 
 /** Build a realistic fake source HOME: ~/.claude/{.credentials.json, settings.json,
  *  plugins/, commands/, projects/<hash>/<uuid>.jsonl} + ~/.claude.json. */
+const PSU_TEMPLATE_ENTRY = { type: 'http', url: 'http://127.0.0.1:9071/api/mcp?superuser=1' };
+
 function seedHome(h: string) {
   const c = join(h, '.claude');
   mkdirSync(join(c, 'plugins'), { recursive: true });
@@ -82,7 +84,13 @@ function seedHome(h: string) {
   writeFileSync(join(c, 'AGENTS.md'), '# Personal rules\nAlways edit topic files, never MEMORY.md.\n');
   // A PEER's transcript already in the shared store — must NOT appear isolated.
   writeFileSync(join(c, 'projects', 'proj-hash', 'peer-uuid.jsonl'), '{"peer":1}');
-  writeFileSync(join(h, '.claude.json'), '{"mcpServers":{"papercusp-su":{},"playwright":{}}}');
+  writeFileSync(join(h, '.claude.json'), '{"mcpServers":{"playwright":{}}}');
+  // Papercusp's psu template — the ONLY place papercusp-su lives (psu-claude-overlay.mjs).
+  mkdirSync(join(h, '.papercusp'), { recursive: true });
+  writeFileSync(
+    join(h, '.papercusp', 'claude-mcp.json'),
+    JSON.stringify({ mcpServers: { 'papercusp-su': PSU_TEMPLATE_ENTRY } }),
+  );
 }
 
 beforeEach(() => {
@@ -179,7 +187,7 @@ describe('ensureProjectTrust (EI-16574: a brand-new cwd wedges a headless launch
       hasCompletedProjectOnboarding: true,
     });
     // Never touches a foreign top-level key.
-    expect(read().mcpServers).toEqual({ 'papercusp-su': {}, playwright: {} });
+    expect(read().mcpServers).toEqual({ playwright: {} });
   });
 
   it('repairs a cwd entry that exists but is missing one of the trust flags — never clobbers its other fields', async () => {
@@ -456,13 +464,51 @@ describe('writeInteractiveClaudeConfig', () => {
     expect(readFileSync(join(home, '.claude', 'CLAUDE.md'), 'utf8')).toBe('@AGENTS.md\n');
   });
 
-  it('symlinks the sibling ~/.claude.json (user-level MCP + onboarding/trust carry through)', async () => {
+  it('copies ~/.claude.json and adds papercusp-su to the SESSION copy only (a plain claude never loads it)', async () => {
     seedHome(home);
+    const userBefore = readFileSync(join(home, '.claude.json'), 'utf8');
     const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-2', home });
     const dest = join(configDir, '.claude.json');
-    expect(lstatSync(dest).isSymbolicLink()).toBe(true);
-    expect(readlinkSync(dest)).toBe(join(home, '.claude.json'));
-    expect(readFileSync(dest, 'utf8')).toContain('papercusp-su');
+    expect(lstatSync(dest).isSymbolicLink()).toBe(false);
+    expect(JSON.parse(readFileSync(dest, 'utf8')).mcpServers).toEqual({
+      playwright: {},
+      'papercusp-su': PSU_TEMPLATE_ENTRY,
+    });
+    expect(readFileSync(join(home, '.claude.json'), 'utf8')).toBe(userBefore);
+  });
+
+  it('a resume keeps its session copy and picks up new trust entries; an old mirror symlink is replaced', async () => {
+    seedHome(home);
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-2b', home });
+    const dest = join(configDir, '.claude.json');
+    writeFileSync(dest, JSON.stringify({ ...JSON.parse(readFileSync(dest, 'utf8')), theme: 'session-kept' }));
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { '/new/cwd': { hasTrustDialogAccepted: true } } }));
+    await writeInteractiveClaudeConfig({ sid: 'su-2b', home });
+    const resumed = JSON.parse(readFileSync(dest, 'utf8'));
+    expect(resumed.theme).toBe('session-kept');
+    expect(resumed.projects['/new/cwd']).toEqual({ hasTrustDialogAccepted: true });
+    expect(resumed.mcpServers['papercusp-su']).toEqual(PSU_TEMPLATE_ENTRY);
+
+    rmSync(dest);
+    symlinkSync(join(home, '.claude.json'), dest);
+    await writeInteractiveClaudeConfig({ sid: 'su-2b', home });
+    expect(lstatSync(dest).isSymbolicLink()).toBe(false);
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')).mcpServers).toBeUndefined();
+  });
+
+  it('merges the psu settings overlay into the SESSION settings only', async () => {
+    seedHome(home);
+    const hook = { type: 'command', command: join(home, '.papercusp', 'hooks', 'cc', 'pretooluse-locks-acquire.sh') };
+    writeFileSync(
+      join(home, '.papercusp', 'claude-settings.json'),
+      JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Edit', hooks: [hook] }] }, enableAllProjectMcpServers: true }),
+    );
+    const userBefore = readFileSync(join(home, '.claude', 'settings.json'), 'utf8');
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-overlay', home });
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
+    expect(settings.hooks.PreToolUse).toEqual([{ matcher: 'Edit', hooks: [hook] }]);
+    expect(settings.enableAllProjectMcpServers).toBe(true);
+    expect(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')).toBe(userBefore);
   });
 
   it('isolates projects/: a REAL dir, and the shared store’s transcript is NOT visible', async () => {
@@ -1267,10 +1313,9 @@ describe('EI-12938: interactive resume needs a LAUNCH-READY config dir, not just
     expect(configDir).toBe(dir);
     expect(repaired).toBe(true);
     expect(await isInteractiveClaudeConfigReady(dir)).toBe(true);
-    // .claude.json — the file that gates the wizard AND carries the user-level
-    // MCP servers — is linked to the user's real config.
-    expect(lstatSync(join(dir, '.claude.json')).isSymbolicLink()).toBe(true);
-    expect(readlinkSync(join(dir, '.claude.json'))).toBe(join(home, '.claude.json'));
+    // .claude.json — the file that gates the wizard AND carries the MCP servers —
+    // is a session copy of the user's config with papercusp-su added.
+    expect(lstatSync(join(dir, '.claude.json')).isSymbolicLink()).toBe(false);
     expect(JSON.parse(readFileSync(join(dir, '.claude.json'), 'utf8')).mcpServers).toHaveProperty('papercusp-su');
     // The lock/coord hooks the shared tree depends on.
     expect(JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')).hooks).toBeTruthy();
@@ -1286,7 +1331,6 @@ describe('EI-12938: interactive resume needs a LAUNCH-READY config dir, not just
     const dir = seedRematerializedDir('su-stub2');
     writeFileSync(join(dir, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'o@e.com' } }));
     expect((await ensureInteractiveClaudeConfig({ sid: 'su-stub2', home })).repaired).toBe(true);
-    expect(lstatSync(join(dir, '.claude.json')).isSymbolicLink()).toBe(true);
     expect(JSON.parse(readFileSync(join(dir, '.claude.json'), 'utf8')).mcpServers).toHaveProperty('papercusp-su');
   });
 
@@ -1514,7 +1558,7 @@ describe('WI-10005232: bootstrap/resume config filesystem calls stay asynchronou
         'writeRecoveryArtifacts',
         'writeSessionSettings',
         'writePrunedPluginsDir',
-        'writePrunedClaudeJson',
+        'writeSessionClaudeJson',
         'linkIntoAsync',
       ]),
     );
@@ -1545,7 +1589,7 @@ describe('EI-28843330270014450 recovery MCP configuration', () => {
     seedHome(home);
     const dir = (await writeInteractiveClaudeConfig({ sid: 'su-local-mcp', home })).configDir;
     rmSync(join(dir, '.claude.json'));
-    rmSync(join(home, '.claude.json'));
+    rmSync(join(home, '.papercusp', 'claude-mcp.json'));
     const local = JSON.stringify({ mcpServers: {
       'papercusp-su': { type: 'http', url: 'http://127.0.0.1:1/api/mcp?client=su-local-mcp' },
     } });
@@ -1563,7 +1607,7 @@ describe('EI-28843330270014450 recovery MCP configuration', () => {
     expect(child.status).toBe(0);
     expect(child.stderr).toBe('');
     expect(readFileSync(join(dir, '.claude.json'), 'utf8')).toBe(local);
-    expect(existsSync(join(home, '.claude.json'))).toBe(false);
+    expect(existsSync(join(home, '.papercusp', 'claude-mcp.json'))).toBe(false);
   });
 
   it.each(['unresolved', 'missing'])('repairs a %s entry using current runtime values without changing global config', async (state) => {
@@ -1577,8 +1621,9 @@ describe('EI-28843330270014450 recovery MCP configuration', () => {
         },
       },
     };
-    const globalConfig = JSON.stringify(source);
-    writeFileSync(join(home, '.claude.json'), globalConfig);
+    const templateConfig = JSON.stringify(source);
+    writeFileSync(join(home, '.papercusp', 'claude-mcp.json'), templateConfig);
+    const globalConfig = readFileSync(join(home, '.claude.json'), 'utf8');
     const dir = (await writeInteractiveClaudeConfig({ sid: 'su-mcp-recovery', home })).configDir;
     if (state === 'missing') {
       // Break the mirror before simulating a client rewrite that dropped MCP.
@@ -1603,6 +1648,7 @@ describe('EI-28843330270014450 recovery MCP configuration', () => {
     expect(entry.headers['x-papercusp-native-session']).toBe('native-recovered');
     expect(lstatSync(join(dir, '.claude.json')).isSymbolicLink()).toBe(false);
     expect(readFileSync(join(home, '.claude.json'), 'utf8')).toBe(globalConfig);
+    expect(readFileSync(join(home, '.papercusp', 'claude-mcp.json'), 'utf8')).toBe(templateConfig);
     if (state === 'missing') expect(current.theme).toBe('keep');
   });
 });

@@ -236,6 +236,9 @@ export function restrictedRuntimePaths(env = process.env, cwd = process.cwd()) {
     path.join(home, '.claude'),
     path.join(home, '.claude.json'),
     path.join(home, '.papercusp', 'hooks'),
+    // The psu Claude MCP template and settings overlay (psu-claude-overlay.mjs).
+    path.join(home, '.papercusp', 'claude-mcp.json'),
+    path.join(home, '.papercusp', 'claude-settings.json'),
     path.join(cwd, '.claude'),
     path.join(cwd, '.mcp.json'),
     path.join(cwd, '.git', 'hooks'),
