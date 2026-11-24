@@ -115,8 +115,13 @@ describe('carry-respawn wiring (EI-21878494442396728)', () => {
     expect(releaseIdx).toBeGreaterThan(markIdx);
 
     // The call must sit inside a try/catch: a lock-plane fault must degrade to the
-    // 20-minute lease, never fail the compaction the agent asked for.
-    const after = source.slice(releaseIdx, releaseIdx + 400);
-    expect(after).toMatch(/catch/);
+    // 20-minute lease, never fail the compaction the agent asked for. The block also
+    // reports what it held and freed, so its `catch` is further down than the call.
+    expect(source.slice(releaseIdx - 120, releaseIdx)).toMatch(/try \{/);
+    const after = source.slice(releaseIdx, releaseIdx + 1200);
+    expect(after).toMatch(/\} catch \(error\) \{/);
+    // A failed release is reported, never swallowed: swallowing it is how the release went
+    // unnoticed while it threw on every call (release-hook-locks.release.test.ts).
+    expect(after).toMatch(/hook file locks NOT released/);
   });
 });

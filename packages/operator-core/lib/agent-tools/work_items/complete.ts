@@ -7555,7 +7555,19 @@ const workItemsCompleteTool = defineTool({
         ? [request.id]
         : [];
     });
-    if (closedIds.length === 0 || args.handNext === false) return bulkContent(declaredEnv);
+    if (closedIds.length === 0) return bulkContent(declaredEnv);
+    // A close says the edits it declares are finished. An edit lock that outlived its edit (a
+    // denied or failed edit's lock is kept for its whole lease) would keep git-sync off exactly
+    // those files, and the close just made would stay unproven: free the closer's own edit
+    // locks on the files this call declared.
+    const declaredFiles = list.flatMap((request) =>
+      closedIds.includes(request.id)
+        ? [...(request.completion?.filesChanged ?? []), ...(request.completion?.filesDeleted ?? [])]
+        : [],
+    );
+    const { releaseDeclaredEditLocks } = await import('./close-follow-up');
+    await releaseDeclaredEditLocks({ ctx, ownerId: ident.ownerId, files: declaredFiles });
+    if (args.handNext === false) return bulkContent(declaredEnv);
     const { handNextAfterClose } = await import('./close-follow-up');
     const next = await handNextAfterClose({
       ctx,

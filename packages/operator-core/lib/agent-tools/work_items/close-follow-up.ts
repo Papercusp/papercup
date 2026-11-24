@@ -229,3 +229,37 @@ export async function handNextAfterClose(
     instruction: `You hold ${item.id}: build it next. Do not call scheduler:get_next; this close made that pull for you.`,
   };
 }
+
+/**
+ * Free the closer's automatic edit locks on the files its close declared.
+ *
+ * The edit hook releases a file's lock when its edit succeeds. A lock whose edit was denied or
+ * failed is kept for its lease (20 minutes), and a later edit of the same file by the same
+ * owner finds it held and leaves it held. git-sync skips a locked file, so the files of a
+ * finished item can go uncommitted, the close that declared them stays `proposed`, and every
+ * item that waits on it stays unclaimable. The close is where an agent says those edits are
+ * done, so it is where their locks end. Only the declared files: the same session may have
+ * another edit in flight. Deliberate `locks:acquire` holds are never touched. Never throws.
+ */
+export async function releaseDeclaredEditLocks(
+  input: { ctx: UnifiedToolContext; ownerId: string; files: readonly unknown[] },
+  release: (params: { ownerId: string; paths: readonly string[] }) => Promise<{ released: string[]; heldBefore: number }> = async (params) =>
+    (await import('../locks/release-hook-locks')).releaseOwnerHookFileLocks(params),
+): Promise<void> {
+  const paths = [...new Set(input.files.filter((file): file is string => typeof file === 'string' && file.trim().length > 0))];
+  if (paths.length === 0) return;
+  try {
+    const freed = await release({ ownerId: input.ownerId, paths });
+    if (freed.heldBefore > 0) {
+      input.ctx.log?.(
+        `[work_items:complete] ${input.ownerId}: released ${freed.released.length} of ${freed.heldBefore} edit lock(s) ` +
+          `left on the files this close declared: ${freed.released.join(', ')}`,
+      );
+    }
+  } catch (error) {
+    input.ctx.log?.(
+      `[work_items:complete] ${input.ownerId}: edit locks on the closed item's files NOT released: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
+}

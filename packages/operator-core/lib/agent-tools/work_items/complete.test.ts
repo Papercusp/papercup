@@ -341,8 +341,10 @@ vi.mock('../../blueprint/phone-producer-admission', () => ({
 // The hand-off a terminal close makes (close-follow-up.ts has its own suite): mocked here so the
 // cases below assert only WHEN the close asks for one and what it does with the answer.
 const handNextAfterClose = vi.hoisted(() => vi.fn());
+const releaseDeclaredEditLocks = vi.hoisted(() => vi.fn(async (..._call: unknown[]) => undefined));
 vi.mock('./close-follow-up', () => ({
   handNextAfterClose: async (...a: unknown[]) => (await handNextAfterClose(...a)) ?? null,
+  releaseDeclaredEditLocks: (...a: unknown[]) => releaseDeclaredEditLocks(...a),
 }));
 
 const ctxFields = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' };
@@ -871,6 +873,19 @@ describe('a terminal close asks for the caller\'s next item', () => {
     getWorkItem.mockResolvedValue(task);
     setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...task, state: 'done' }));
     handNextAfterClose.mockReset();
+    releaseDeclaredEditLocks.mockClear();
+  });
+
+  it('frees the closer\'s edit locks on the files the close declares, whether or not it hands an item', async () => {
+    const withFiles = { ...closing, completion: { ...closing.completion, filesChanged: ['src/a.py', 'tests/test_a.py'], filesDeleted: ['src/old.py'] } };
+    await envRaw({ ...withFiles, handNext: false });
+    expect(releaseDeclaredEditLocks).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ ownerId: 'su-tester', files: ['src/a.py', 'tests/test_a.py', 'src/old.py'] }),
+    );
+    // A call that closed nothing declares no finished edit.
+    releaseDeclaredEditLocks.mockClear();
+    await envRaw({ ...withFiles, validateOnly: true });
+    expect(releaseDeclaredEditLocks).not.toHaveBeenCalled();
   });
 
   it('asks once per call, naming what closed, and returns the answer beside the results as `next`', async () => {

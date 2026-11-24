@@ -98,32 +98,52 @@ export function partitionHookLocks(rows: readonly ActiveLockRow[], ownerId: stri
  */
 export async function releaseOwnerHookFileLocks(params: {
   ownerId: string;
+  /**
+   * Release only the hook locks on these files (repository-relative, or absolute). The
+   * work-item close passes the files it declares: the close itself says those edits are
+   * finished, while the same session may have another edit in flight elsewhere. Omitted, every
+   * hook lock the owner holds is released, which is right only where no edit can be in flight
+   * (the carry-respawn point).
+   */
+  paths?: readonly string[];
 }): Promise<ReleaseHookLocksResult> {
   const ownerId = params.ownerId.trim();
   if (!ownerId) return { released: [], heldBefore: 0, preservedDeliberate: 0 };
+  if (params.paths && params.paths.length === 0) return { released: [], heldBefore: 0, preservedDeliberate: 0 };
 
   await ensureBootstrap();
   const queue = await readQueue(getTxPool(), { coordinationDomain: null });
-  const { hookLocks, preservedDeliberate } = partitionHookLocks(queue.active_locks, ownerId);
+  const owned = partitionHookLocks(queue.active_locks, ownerId);
+  const named = params.paths ? new Set(params.paths.map((path) => path.replace(/^\.\//, ''))) : null;
+  const hookLocks = named
+    ? owned.hookLocks.filter((row) => named.has(row.path) || named.has(`${row.coordination_domain.replace(/\/$/, '')}/${row.path}`))
+    : owned.hookLocks;
+  const { preservedDeliberate } = owned;
   if (hookLocks.length === 0) {
     return { released: [], heldBefore: 0, preservedDeliberate };
   }
 
-  // One transaction per domain rather than per lock: `tryRelease`'s `paths` selector is
-  // owner-scoped, so a domain's whole hook set goes in a single statement and fires one
-  // grant cascade for whoever is waiting on those paths.
-  const byDomain = new Map<string, string[]>();
+  // One release per lock set. The store releases by `lock_id` (optionally narrowed to paths)
+  // or everything an owner holds, and nothing else: a selector of paths alone is refused with
+  // "locks:release requires lock_id or all_mine". This function passed paths alone, so from
+  // the day the store dropped that selector every call here threw, the carry-respawn caller
+  // swallowed it, and no hook lock was released at any respawn. `all_mine` is not the answer
+  // either: it would drop the deliberate holds this function exists to keep. Naming the
+  // paths with the id keeps the release exact when a deliberate acquire shares a lock id
+  // with a hook's (the store reuses an owner's id for a path it already holds).
+  const byLockSet = new Map<string, { domain: string; lockId: string; paths: string[] }>();
   for (const row of hookLocks) {
-    const paths = byDomain.get(row.coordination_domain) ?? [];
-    paths.push(row.path);
-    byDomain.set(row.coordination_domain, paths);
+    const key = `${row.coordination_domain}\0${row.lock_id}`;
+    const set = byLockSet.get(key) ?? { domain: row.coordination_domain, lockId: row.lock_id, paths: [] };
+    set.paths.push(row.path);
+    byLockSet.set(key, set);
   }
 
   const released: string[] = [];
-  for (const [domain, paths] of byDomain) {
+  for (const { domain, lockId, paths } of byLockSet.values()) {
     const outcome = await acquireWithContentionRetry(() =>
       inWorkspaceTxn(domain, ownerId, (tx) =>
-        tryRelease(tx, { coordinationDomain: domain, owner: ownerId, paths }),
+        tryRelease(tx, { coordinationDomain: domain, owner: ownerId, lockId, paths }),
       ),
     );
     if (outcome.released.length > 0) {

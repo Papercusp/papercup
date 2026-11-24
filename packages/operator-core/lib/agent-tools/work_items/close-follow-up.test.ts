@@ -7,7 +7,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
-import { handNextAfterClose, itemBoundaryNote, HAND_OFF_SUMMARY_CAP, type CloseHandOffDeps } from './close-follow-up';
+import { handNextAfterClose, itemBoundaryNote, releaseDeclaredEditLocks, HAND_OFF_SUMMARY_CAP, type CloseHandOffDeps } from './close-follow-up';
 
 const CLAIM = {
   ok: true,
@@ -230,5 +230,33 @@ describe('a pull that claims nothing', () => {
   it('reads the structured form of the pull when the dispatcher returns one', async () => {
     const { run } = setup({ pull: { ok: false, error: 'the text form' }, structured: CLAIM });
     expect(await run()).toMatchObject({ handed: true, workItem: { id: 'WI-10' } });
+  });
+});
+
+describe('a close frees the edit locks left on the files it declares', () => {
+  const log = vi.fn();
+  const ctx = { log } as unknown as UnifiedToolContext;
+
+  it('asks for the declared files once each, and says what it freed', async () => {
+    const release = vi.fn(async () => ({ released: ['src/inv_money.py'], heldBefore: 1 }));
+    await releaseDeclaredEditLocks({ ctx, ownerId: 'su-member', files: ['src/inv_money.py', 'tests/test_inv_money.py', 'src/inv_money.py', '', 7] }, release);
+    expect(release).toHaveBeenCalledExactlyOnceWith({ ownerId: 'su-member', paths: ['src/inv_money.py', 'tests/test_inv_money.py'] });
+    expect(log).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('released 1 of 1 edit lock(s)'));
+  });
+
+  it('is silent when no lock was left, and asks nothing when no file was declared', async () => {
+    log.mockClear();
+    const release = vi.fn(async () => ({ released: [], heldBefore: 0 }));
+    await releaseDeclaredEditLocks({ ctx, ownerId: 'su-member', files: ['src/a.py'] }, release);
+    await releaseDeclaredEditLocks({ ctx, ownerId: 'su-member', files: [] }, release);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('reports a release that failed and never throws: the close has landed', async () => {
+    log.mockClear();
+    const release = vi.fn(async () => { throw new Error('lock plane unreachable'); });
+    await expect(releaseDeclaredEditLocks({ ctx, ownerId: 'su-member', files: ['src/a.py'] }, release)).resolves.toBeUndefined();
+    expect(log).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('NOT released: lock plane unreachable'));
   });
 });
