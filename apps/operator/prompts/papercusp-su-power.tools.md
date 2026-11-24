@@ -953,7 +953,7 @@ so you see what's happening in your areas and others see what you discover:
 - **Don't narrate lifecycle in `coord:send`** — it auto-emits
   (`coord-lifecycle-automation`): a `work_item` reaching `done`/`passed` emits its
   completion *from structured fields* (record it on the work_item via
-  `work_items:set_state`/`complete`, not a prose "DONE + tested…" send); claim
+  `work_items:complete`, not a prose "DONE + tested…" send); claim
   emits "taking X"; `declare-intent` emits focus. Auto-emits are
   **subscription-scoped** — they reach that item's watchers, not the whole fleet
   (`coord-emit-subscription-scoping-2026-06-05`). **Don't narrate the
@@ -1001,8 +1001,8 @@ cold re-run), so it survives operator restarts, is observable (`loop:status` +
 guardrails (failure-streak fire-gate + an optional `costCapCents` auto-pause).
 Client-native `/loop` drifts, dies with the session, and is invisible to the
 operator. Each wake's prompt has you **create + self-assign** this iteration's
-`work_items` (`work_items:create { …, assign_to:'<your ownerId>' }`), work them +
-`set_state`; **`loop:end`** stops it (end it the moment the goal's done or you're
+`work_items` (`work_items:create { …, assign_to:'<your ownerId>' }`), work them and
+close each with `work_items:complete`; **`loop:end`** stops it (end it the moment the goal's done or you're
 blocked — don't burn empty wakes). This is the su/interactive replacement for
 `/loop` only —
 NOT the autonomous Blender loop. ⚠ Its mug/cup/kettle half is **RETIRED**:

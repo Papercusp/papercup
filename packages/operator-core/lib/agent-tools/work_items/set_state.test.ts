@@ -34,7 +34,15 @@ const armM = vi.mocked(planWorkItemArm);
 const tool = (await import('./set_state')).default;
 
 type Out = { data: any };
-const body = async (args: unknown) => (((await tool.handler(args as never, {} as never)) as Out).data);
+// The owner acting through the desktop UI (`isOwnerUiCaller`): the one caller that may still
+// finish an item with set_state. Every agent caller is refused a `done` (the last describe).
+const OWNER_UI = {
+  spawnId: 'palette',
+  isSuperuser: false,
+  principal: { kind: 'system', slug: 'loopback', authMethod: 'process-internal' },
+};
+const body = async (args: unknown) => (((await tool.handler(args as never, OWNER_UI as never)) as Out).data);
+const asAgent = async (args: unknown) => (((await tool.handler(args as never, {} as never)) as Out).data);
 
 describe('work_items:set_state dispatch validation (EI-25280526101674032)', () => {
   it('accepts a forced reopen through the Standard Schema validator used by MCP dispatch', async () => {
@@ -1125,5 +1133,36 @@ describe('work_items:set_state — non-terminal reason is recorded as a comment 
 
   it('still REFUSES completionRef on a non-terminal write', () => {
     expect(parse({ id: 'WI-1', state: 'wip', completionRef: REASON }).success).toBe(false);
+  });
+});
+
+describe('work_items:set_state does not finish an item for an agent', () => {
+  beforeEach(() => {
+    setM.mockReset();
+    getM.mockReset();
+  });
+
+  it.each(['done', 'passed', 'resolved', 'DONE'])(
+    'refuses an agent its %s and points it to work_items:complete, writing nothing',
+    async (state) => {
+      const out = await asAgent({ id: 'WI-1', state, completionRef: 'did it', assumptions: 'none' });
+
+      const result = out.results?.[0] ?? out;
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe('close_through_complete');
+      expect(result.hint).toContain('work_items:complete');
+      expect(result.hint).toContain('testsRun');
+      expect(setM).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still lets an agent give an item up: dropped needs no proof', async () => {
+    getM.mockResolvedValue({ id: 'WI-1', state: 'open', harness: 'h' } as never);
+    setM.mockResolvedValue({ item: { id: 'WI-1', state: 'dropped' }, aliasInfo: null } as never);
+
+    const out = await asAgent({ id: 'WI-1', state: 'dropped', completionRef: 'superseded', assumptions: 'none' });
+
+    const result = out.results?.[0] ?? out;
+    expect(result.error).not.toBe('close_through_complete');
   });
 });

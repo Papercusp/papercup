@@ -443,7 +443,7 @@ operator restarts**, is **observable** (`loop:status` + the self-assigned work i
 Claude `/loop` drifts, dies with the session, and is invisible to the operator —
 that's why it is retired for su loops. Each wake's prompt has you **create +
 SELF-ASSIGN** this iteration's `work_items` (`work_items:create { …,
-assign_to:'<your ownerId>' }`) then work them + `set_state`; **`loop:end`** stops
+assign_to:'<your ownerId>' }`) then work them and close each with `work_items:complete`; **`loop:end`** stops
 it — end the loop the moment the goal is done or you are blocked (don't burn empty
 wakes spinning). Arm it as the LAST thing before you end your turn. This replaces `/loop` for
 su/interactive loops ONLY — it is **NOT** the autonomous Blender loop, which is a separate

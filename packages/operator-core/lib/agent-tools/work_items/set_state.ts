@@ -24,6 +24,7 @@ import {
   type TerminalCompletionConflict,
 } from '../../work-items';
 import { refuseNonAgentWorkAtDoor } from '../../work-nature/agent-work-door-gate';
+import { refuseSuccessfulCloseOutsideComplete } from '../../work-nature/successful-close-door';
 import { resolvePlanItemStamp } from '../../scheduler/plan-item-lane-guard';
 // From the LEAF module, not '../../work-items': unit tests here mock that module
 // wholesale, which would make the guard `undefined` at exactly this call site.
@@ -503,9 +504,9 @@ export default defineTool({
   name: 'work_items:set_state',
   profile: 'engineer',
   description:
-    'Set state for one or many work-items: open|wip|blocked|needs-human|done|dropped (legacy aliases preserve terminal_reason). Terminal writes need completionRef + assumptions ("none" or facts:assert keys). Blocked writes need work_items:set_blocker; use work_items:link { rel:"blocks" } for internal dependencies. Plan-linked features use plans:set-status. Reopen terminal items with force:true. Supports id, ids, or items; inspect expectedState/appliedState. Readback mismatches fail.',
+    'Set state for one or many work-items: open|wip|blocked|needs-human|dropped (legacy aliases preserve terminal_reason; finish with work_items:complete, not done here). Terminal writes need completionRef + assumptions ("none" or facts:assert keys). Blocked writes need work_items:set_blocker; use work_items:link { rel:"blocks" } for internal dependencies. Plan-linked features use plans:set-status. Reopen terminal items with force:true. Supports id, ids, or items; inspect expectedState/appliedState. Readback mismatches fail.',
   guidance: {
-    when: `Use for lifecycle changes. Prefer work_items:complete for terminal evidence. For blocked, first use work_items:set_blocker (event/gate/runtime/human) or work_items:link { rel:"blocks" }; bare blocked is refused. Before \`force:true\`, read terminalOwner/ref. ${TERMINAL_CLOSE_RECOVERY_HINT}`,
+    when: `Use for lifecycle changes and drops; finish (done) with work_items:complete. For blocked, first use work_items:set_blocker (event/gate/runtime/human) or work_items:link { rel:"blocks" }; bare blocked is refused. Before \`force:true\`, read terminalOwner/ref. ${TERMINAL_CLOSE_RECOVERY_HINT}`,
     notWhen: "Never on non-work or human-audience rows, not even needs-human: data or a person's job.",
     chaining: 'work_items:link records internal dependency readiness (no separate blocked-state write); work_items:set_blocker parks an active typed external blocker; terminal writes use completionRef + assumptions.',
     seeAlso: [
@@ -600,6 +601,11 @@ export default defineTool({
         // ctx carries the server-derived caller identity: only the owner's UI is exempt (D-038).
         const notAgentWork = await refuseNonAgentWorkAtDoor('work_items:set_state', it.id, harness, ctx);
         if (notAgentWork) return notAgentWork;
+        // A work-item is FINISHED only through work_items:complete, where its proof is checked:
+        // an agent's set_state to `done` (or an alias of it) is refused and pointed there. Giving
+        // an item up (`dropped`) needs no proof and stays here; the owner's UI stays exempt.
+        const closeElsewhere = refuseSuccessfulCloseOutsideComplete(it.id, it.state, ctx);
+        if (closeElsewhere) return closeElsewhere;
         if (String(it.state).trim().toLowerCase() === 'blocked') {
           const current = await getWorkItem(it.id, harness);
           if (current) {

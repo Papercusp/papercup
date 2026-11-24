@@ -687,7 +687,7 @@ const COMPLETE_CLOSE_SHAPE_MESSAGE =
   'issue success is "resolved" and discard is "closed". Unified "done" (success) and "dropped" ' +
   '(discard) are also accepted; legacy issue "closed" maps to "dropped". `state` is REQUIRED to actually close it: a completion with no `state` only records the note, ' +
   'the item stays claimable. `assumptions` is also REQUIRED; pass "none" when no recorded fact ' +
-  'supports the close (see work_items:set_state to change state alone, without a completion record).';
+  'supports the close (work_items:set_state changes state alone and can drop an item, but never finishes one).';
 
 /**
  * EI-21314040234920121 and its duplicate EI-21562711070130195 both asked for the treeStamp
