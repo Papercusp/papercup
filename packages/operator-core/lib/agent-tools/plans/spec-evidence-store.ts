@@ -3849,9 +3849,20 @@ export async function listWorkItemSpecRevisionEdges(options: {
   planSlug?: string;
   workItemId: string;
 }): Promise<WorkItemSpecRevisionEdge[]> {
-  const scope = await resolvePlanScope({
-    harnessSlug: options.harnessSlug,
-  });
+  let scope: Awaited<ReturnType<typeof resolvePlanScope>>;
+  try {
+    scope = await resolvePlanScope({
+      harnessSlug: options.harnessSlug,
+    });
+  } catch (error) {
+    // A project in no Hive holds no plans, so nothing links its work items to a spec
+    // clause: its edge set is empty, as plans:list reads its plan list as empty. Without
+    // this, every terminal close of a plain project's item was refused by the
+    // spec-test-adequacy gate, which reads these edges first. A read that FAILED is not
+    // an absence and still throws (`isUnknownPlanScopeError` checks the type first).
+    if ((await import('./source')).isUnknownPlanScopeError(error)) return [];
+    throw error;
+  }
   const planSlug = options.planSlug;
   const rows = await withWorkspace(
     scope.workspaceId,
