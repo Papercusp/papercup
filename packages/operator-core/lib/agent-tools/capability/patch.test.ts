@@ -14,7 +14,7 @@
  * arrangement file-tools.test.ts uses, and the reason EI-5826 requires that
  * helper rather than a bare os.tmpdir().
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkNonRepoTmpDir } from '../locks/non-repo-tmpdir';
@@ -204,6 +204,153 @@ describe('capability:patch — per-file semantics', () => {
     expect(r.isError).toBe(true);
     expect(parse(r).reason).toBe('read_failed');
     expect(readFileSync(a, 'utf8')).toBe(before);
+  });
+});
+
+describe('capability:patch — whole files in the same unit', () => {
+  it('creates several new files and changes an existing one in ONE call, under one lock', async () => {
+    const caller = fixture('caller.ts', 'import { old } from "./old";\nold();\n');
+    const module = join(DIR, `${seq++}-pkg`, 'deep', 'wrap.ts');
+    const tests = join(DIR, `${seq++}-pkg`, 'wrap.test.ts');
+
+    const r = await patch([
+      { file_path: module, content: 'export function wrap() {}\n' },
+      { file_path: tests, content: 'import { wrap } from "./deep/wrap";\n' },
+      { file_path: caller, old_string: 'old();', new_string: 'wrap();' },
+    ]);
+
+    expect(r.isError).toBeFalsy();
+    const body = parse(r);
+    expect(body).toMatchObject({ ok: true, hunks: 3, filesLocked: 3, filesWritten: 3, filesCreated: 2 });
+    // The missing parent directories were made, and each file holds exactly what was sent.
+    expect(readFileSync(module, 'utf8')).toBe('export function wrap() {}\n');
+    expect(readFileSync(tests, 'utf8')).toBe('import { wrap } from "./deep/wrap";\n');
+    expect(readFileSync(caller, 'utf8')).toBe('import { old } from "./old";\nwrap();\n');
+    expect((body.files as Array<{ path: string; created?: boolean }>).filter((f) => f.created).map((f) => f.path).sort())
+      .toEqual([module, tests].sort());
+    expect(lockedPathSets).toHaveLength(1);
+    expect([...lockedPathSets[0]!].sort()).toEqual([module, tests, caller].sort());
+  });
+
+  it('creates NO file when a later change does not match: the new files are not left behind', async () => {
+    const existing = fixture('existing.ts', 'keep\n');
+    const fresh = join(DIR, `${seq++}-never-created.ts`);
+
+    const r = await patch([
+      { file_path: fresh, content: 'new\n' },
+      { file_path: existing, old_string: 'NOT THERE', new_string: 'x' },
+    ]);
+
+    expect(r.isError).toBe(true);
+    expect(parse(r).reason).toBe('hunk_not_found');
+    expect(existsSync(fresh)).toBe(false);
+    expect(readFileSync(existing, 'utf8')).toBe('keep\n');
+  });
+
+  it('replaces the whole of an existing file, and a later change in the same call sees the new text', async () => {
+    const f = fixture('whole.ts', 'one\ntwo\n');
+
+    const r = await patch([
+      { file_path: f, content: 'alpha\nbeta\n' },
+      { file_path: f, old_string: 'beta', new_string: 'gamma' },
+    ]);
+
+    expect(r.isError).toBeFalsy();
+    expect(readFileSync(f, 'utf8')).toBe('alpha\ngamma\n');
+    expect(parse(r)).toMatchObject({ filesWritten: 1, filesCreated: 0 });
+  });
+
+  it('refuses a change to a file that does not exist, and says how to create it', async () => {
+    const sibling = fixture('sibling.ts', 'present\n');
+    const missing = join(DIR, `${seq++}-missing.ts`);
+
+    const r = await patch([
+      { file_path: sibling, old_string: 'present', new_string: 'changed' },
+      { file_path: missing, old_string: 'x', new_string: 'y' },
+    ]);
+
+    expect(r.isError).toBe(true);
+    expect(parse(r).reason).toBe('read_failed');
+    expect(String(parse(r).message)).toContain('give its whole text as content');
+    expect(readFileSync(sibling, 'utf8')).toBe('present\n');
+    expect(existsSync(missing)).toBe(false);
+  });
+
+  it('refuses an entry that is neither a whole file nor a change, or is both, before touching anything', async () => {
+    const f = fixture('shape.ts', 'body\n');
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['both forms', { file_path: f, content: 'x\n', old_string: 'body', new_string: 'x' }],
+      ['content with replace_all', { file_path: f, content: 'x\n', replace_all: true }],
+      ['old_string alone', { file_path: f, old_string: 'body' }],
+      ['new_string alone', { file_path: f, new_string: 'x' }],
+      ['a path alone', { file_path: f }],
+    ];
+    const accepted: string[] = [];
+    for (const [name, entry] of cases) {
+      const r = await patch([entry]);
+      if (!r.isError || parse(r).reason !== 'invalid_entry') accepted.push(name);
+    }
+    expect(accepted).toEqual([]);
+    expect(readFileSync(f, 'utf8')).toBe('body\n');
+    // Refused before the lock: nothing was read, so nothing needed holding.
+    expect(lockedPathSets).toHaveLength(0);
+  });
+
+  it('holds a whole file to capability:write\'s own refusals, and writes nothing beside it', async () => {
+    const full = fixture('full.ts', 'do not lose me\n');
+    const other = fixture('other.ts', 'other\n');
+    const view = `${full} (4 lines)\n     1\tone\n     2\ttwo\n     3\tthree\n     4\tfour`;
+
+    const emptied = await patch([
+      { file_path: other, old_string: 'other', new_string: 'changed' },
+      { file_path: full, content: '' },
+    ]);
+    const displayed = await patch([{ file_path: full, content: view }]);
+    const globbed = await patch([{ file_path: join(DIR, 'src', '*.ts'), content: 'x\n' }]);
+
+    expect(parse(emptied).reason).toBe('empty_overwrite_refused');
+    expect(parse(displayed).reason).toBe('display_formatted_content');
+    expect(parse(globbed).reason).toBe('invalid_path');
+    expect(readFileSync(full, 'utf8')).toBe('do not lose me\n');
+    expect(readFileSync(other, 'utf8')).toBe('other\n');
+    // A new empty file destroys nothing and is allowed, as capability:write allows it.
+    const marker = join(DIR, `${seq++}-py.typed`);
+    expect((await patch([{ file_path: marker, content: '' }])).isError).toBeFalsy();
+    expect(readFileSync(marker, 'utf8')).toBe('');
+  });
+
+  it('removes a file it created, and restores one it changed, when a later write fails', async () => {
+    const changed = fixture('rollback-changed.ts', 'before\n');
+    const made = join(DIR, `${seq++}-rollback-made.ts`);
+    // A folder nothing can be written into: the third write fails after two have landed.
+    const sealed = join(DIR, `${seq++}-sealed`);
+    mkdirSync(sealed);
+    chmodSync(sealed, 0o555);
+    try {
+      const r = await patch([
+        { file_path: changed, old_string: 'before', new_string: 'after' },
+        { file_path: made, content: 'made\n' },
+        { file_path: join(sealed, 'blocked.ts'), content: 'blocked\n' },
+      ]);
+
+      expect(r.isError).toBe(true);
+      const body = parse(r);
+      expect(body.reason).toBe('write_failed');
+      expect((body.rolledBack as string[]).sort()).toEqual([changed, made].sort());
+      expect(body.rollbackFailed).toEqual([]);
+      expect(readFileSync(changed, 'utf8')).toBe('before\n');
+      expect(existsSync(made)).toBe(false);
+      expect(existsSync(join(sealed, 'blocked.ts'))).toBe(false);
+    } finally {
+      chmodSync(sealed, 0o755);
+    }
+  });
+
+  it('says in its own text that it writes whole files, so a caller reaches for it to create them', () => {
+    // An agent picks a tool by this text: before whole files it read as a tool for changes only.
+    expect(patchTool.description).toContain('whole file');
+    expect(patchTool.description).toContain('creates it');
+    expect(patchTool.guidance?.when).toContain('new files');
   });
 });
 

@@ -113,11 +113,12 @@ export default defineTool({
     'Exact string replacement in a file, like the native Edit tool. old_string must match exactly and (unless replace_all) be unique. Acquires the per-path file lock server-side before editing. Path is absolute or relative to the project dir.',
   guidance: {
     when: 'Make a targeted in-place change to an existing file. Include enough surrounding context in old_string to make it unique, or set replace_all.',
-    notWhen: 'Creating a file or replacing it wholesale — use capability:write. Reading — use capability:read.',
+    notWhen: 'Creating a file or replacing it wholesale — use capability:write. Changes or new files in several files — capability:patch, one call. Reading — use capability:read.',
     chaining: 'capability:read → capability:edit. On a file_locked result, wait/pivot/coordinate with the holder.',
     seeAlso: [
       'capability:read (read / get the exact string first)',
       'capability:write (overwrite or create a whole file)',
+      'capability:patch (several files in one call)',
       'capability:inspect (typecheck / test to verify the edit)',
     ],
   },

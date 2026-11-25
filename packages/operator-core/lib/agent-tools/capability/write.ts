@@ -94,12 +94,13 @@ export default defineTool({
   description:
     'Write a file (create or overwrite) like the native Write tool. Acquires the per-path file lock server-side before writing (busy → returns who holds it). Path is absolute or relative to the project dir.',
   guidance: {
-    when: 'Create a new file, or fully replace an existing one. For a partial change to an existing file prefer capability:edit.',
-    notWhen: 'A small in-place change — use capability:edit (exact string replacement). Reading first — use capability:read.',
+    when: 'Create ONE new file, or fully replace one. For a partial change to an existing file prefer capability:edit.',
+    notWhen: 'Several files in one go — capability:patch writes them all in one call. A small in-place change — capability:edit. Reading first — capability:read.',
     chaining: 'capability:read (if overwriting) → capability:write. On a file_locked result, wait/pivot/coordinate with the holder.',
     seeAlso: [
       'capability:read (read before overwriting)',
       'capability:edit (surgical edit instead of overwrite)',
+      'capability:patch (several whole files and changes in one call)',
     ],
   },
   capability: 'capability:fs-write',
