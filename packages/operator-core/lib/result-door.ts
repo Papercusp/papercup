@@ -842,6 +842,22 @@ const COORD_SEND_DELIVERY_PRESERVE_PATHS = [
  */
 const WORK_ITEMS_COMPLETE_RECEIPT_PRESERVE_PATHS = [
   'ok',
+  // The hand-off a terminal close makes for a fleet member (work_items/close-follow-up.ts):
+  // which item the caller now holds, whether its context is about to be renewed, and what it
+  // does next. Lost from a cut receipt, the caller pulls for an item it already holds and
+  // works on through a renewal that is waiting for its turn to end. Declared AHEAD of the
+  // rows: preserved paths are given the door's budget in the order they are declared here, and
+  // the rows' warnings alone can spend it (measured: `omittedPreserved: ["$.next"]` with these
+  // declared last). The handed item's text is not kept: it is the bulk, and `work_items:get`
+  // has it.
+  'next.handed',
+  'next.workItem.id',
+  'next.workItem.title',
+  'next.held',
+  'next.windDown',
+  'next.freshContext',
+  'next.freshContextRefused',
+  'next.instruction',
   'counts.ok',
   'counts.failed',
   'results[].ok',
@@ -863,6 +879,9 @@ const WORK_ITEMS_COMPLETE_RECEIPT_PRESERVE_PATHS = [
   'results[].finish.complete',
   'results[].finishFailed',
 ] as const;
+
+/** The top-level fields of a `work_items:complete` receipt its last-resort preview rebuilds. */
+const WORK_ITEMS_COMPLETE_RECEIPT_TOP_LEVEL_KEYS = ['ok', 'next', 'counts', 'results'] as const;
 
 /**
  * `work_items:set_blocker` can persist the typed blocker before its oversized
@@ -2529,7 +2548,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         originalChars: input.sourceBytes,
         targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
         preservePaths: WORK_ITEMS_COMPLETE_RECEIPT_PRESERVE_PATHS,
-        preserveTopLevelKeys: ['ok', 'counts', 'results'],
+        preserveTopLevelKeys: WORK_ITEMS_COMPLETE_RECEIPT_TOP_LEVEL_KEYS,
         recovery: volatileRecovery
           ? {
               cursor: volatileRecovery.cursor,
@@ -4687,7 +4706,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               ? { preserveTopLevelKeys: ['ok', 'mode', 'claimed', 'workItem', 'ledgerIdeaId', 'gradeWith'] as const }
               : {}),
       ...(isWorkItemsCompleteCall(opts)
-        ? { preserveTopLevelKeys: ['ok', 'counts', 'results'] as const }
+        ? { preserveTopLevelKeys: WORK_ITEMS_COMPLETE_RECEIPT_TOP_LEVEL_KEYS }
         : isWorkItemsSetBlockerCall(opts)
           ? { preserveTopLevelKeys: ['ok', 'counts', 'results'] as const }
           : isWorkItemsReleaseCall(opts)

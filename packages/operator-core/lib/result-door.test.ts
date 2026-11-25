@@ -2081,6 +2081,55 @@ describe('applyResultDoor', () => {
     expect(control.results.some((row) => row.completionAuthority === undefined)).toBe(true);
   });
 
+  it('keeps the hand-off of a close through a cut receipt: the item now held, and what to do next', () => {
+    // A fleet member's close also makes its next pull and may queue a fresh context
+    // (work_items/close-follow-up.ts). Measured: a close sent without a projection came back
+    // cut, the hand-off was not among the kept fields, and the member pulled for an item it
+    // already held and worked on through a renewal that waited for its turn to end.
+    // A close echoes many middling fields (warnings, the brief, the verification record): they
+    // spend the door's budget before a field that follows them is reached.
+    const echoed = Object.fromEntries(Array.from({ length: 30 }, (_, index) => [`echo${index}`, 'e'.repeat(700)]));
+    const closed = {
+      ok: true,
+      id: 'WI-15',
+      appliedState: 'done',
+      completionAuthority: 'proposed',
+      authorityWarning: 'W'.repeat(848),
+      ...echoed,
+      workItem: { id: 'WI-15', kind: 'change', state: 'done', title: 'closed item', summary: 'S'.repeat(4_000) },
+      completion: { summary: 'C'.repeat(4_000) },
+    };
+    const next = {
+      handed: true,
+      workItem: { id: 'WI-5', title: 'the item handed next', summary: 'T'.repeat(6_000) },
+      freshContext: 'queued',
+      instruction: 'You hold WI-5. End this turn now, with no further tool call.',
+    };
+    // After the echoed rows, where a cut from the tail reaches it first: the worst place for it.
+    const original = JSON.stringify({ ok: true, counts: { ok: 1, failed: 0 }, results: [closed], next });
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const door = (toolName: string) => {
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        { toolName, workspaceId: 'ws-1', runId: RUN_ID },
+      ) as DoorableResult;
+      const text = (doored.content.find((item) => (item as { type?: string }).type === 'text') as { text: string }).text;
+      return JSON.parse(text) as { next?: Record<string, unknown> & { workItem?: Record<string, unknown> }; _projection: { truncated: boolean } };
+    };
+
+    const parsed = door('work_items:complete');
+    expect(parsed._projection.truncated).toBe(true);
+    expect(parsed.next).toMatchObject({ handed: true, freshContext: 'queued', instruction: next.instruction });
+    expect(parsed.next?.workItem).toMatchObject({ id: 'WI-5', title: 'the item handed next' });
+    // The handed item's text is the bulk and is not what the caller acts on here.
+    expect(String(parsed.next?.workItem?.summary ?? '').length).toBeLessThan(next.workItem.summary.length);
+
+    // FALSIFIABILITY CONTROL: the same bytes through a tool with no such declaration lose it.
+    const control = door('plans:list');
+    expect(control.next?.instruction === next.instruction && control.next?.freshContext === 'queued').toBe(false);
+  });
+
   it('REGRESSION (EI-25394627440656634): preserves committed blocker writes when the ordinary spill fails', () => {
     const noise = Object.fromEntries(
       Array.from({ length: 18 }, (_, index) => [`detail${index}`, 'n'.repeat(900)]),

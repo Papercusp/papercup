@@ -52,7 +52,9 @@ export class Members {
         }
         if (!this.agent.turn || this.agent.turn.cancel) throw new Error('Originating turn ended');
         if (req.url==='/carry') {
-          if (!job.nonce || !job.text || record.pendingCarry || this.children.size) throw new Error('Carry is unavailable');
+          // A carry asked for while one is still queued takes its place (session.mjs
+          // `queueCarry`): the operator keeps one pending carry an owner, the newest.
+          if (!job.nonce || !job.text || this.children.size) throw new Error('Carry is unavailable');
           await this.agent.queueCarry(record,job);
         } else if (this.agent.clientHostsMembers) await this.hand(record,job);
         else await this.launch(record,job,this.agent.turn);

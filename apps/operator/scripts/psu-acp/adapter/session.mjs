@@ -277,8 +277,13 @@ export class ManagedAgent {
     }
   }
 
+  // A carry is applied when the turn that asked for it ends. A session that works on past the
+  // request (a member that closes its next item in the same turn, say) asks again before that:
+  // the newer carry replaces the queued one, because it is the one that says where the session
+  // is now. Refusing it left the session to be renewed, later, onto a first prompt naming an
+  // item it had already closed, and every close in between reported its renewal unreachable.
   async queueCarry(record,job) {
-    record.pendingCarry={native:randomUUID(),nonce:job.nonce,text:job.text,addendum:job.addendum};
+    record.pendingCarry={native:record.pendingCarry?.native || randomUUID(),nonce:job.nonce,text:job.text,addendum:job.addendum};
     await this.operator.save(record);
   }
 
