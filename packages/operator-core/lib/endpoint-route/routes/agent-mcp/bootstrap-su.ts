@@ -28,6 +28,7 @@ import { provisionNativeRuntimeBearer } from '@papercusp/agent-mcp/provisioning'
 import { acpCensus, acpTurnOrigin } from './bootstrap-su-acp';
 import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../workspace-registry';
 import { bindSessionOutsidePlanRef, readSessionOutsidePlanRef, resolveSessionOutsidePlanRef } from '../../../session-outside-plan';
+import { CAPABILITY_ONLY_ENV, outsideSessionCapabilityOnly, type SessionCapabilityOnly } from '../../../session-outside-capability-only';
 import { buildConsoleEnvelope } from '../../../console-launcher';
 import { CORS_HEADERS, jsonRes, gatePrincipal, AUTO_MODE_DIRECTIVE, AUTO_MODE_DIRECTIVE_LOOP_ARMED, autoModeDirective, DRAIN_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE, composeModePromptSection } from './bootstrap-su-shared';
 import { requirePrincipal } from '../../../auth/require-principal';
@@ -145,6 +146,12 @@ export interface BootstrapSuResult {
   harnessSlug: string | null;
   planSlug: string | null;
   outsidePlanRef?: string | null;
+  /**
+   * Present when the session is to work through Papercusp's own file and shell tools: the
+   * tools of Claude Code its host withdraws, and the Papercusp tools it is given in their
+   * place. Absent, the session keeps Claude Code's own.
+   */
+  capabilityOnly?: SessionCapabilityOnly;
   /**
    * File holding the engineer playbook + per-launch scope/plan addendum —
    * the launcher feeds it as the system prompt. claude/omp: a launch-context
@@ -3481,6 +3488,12 @@ export const bootstrapSu = defineTool({
     // PAPERCUSP_FLEET_ROLE) right next to the account pin — the presence-write path
     // reads those exact var names. Empty when no fleet was chosen (byte-identical).
     Object.assign(envelopeEnv, fleetPin.env);
+    // A session on an outside plan works through Papercusp's own file and shell tools while
+    // papercusp-fleet-capability-only is on (session-outside-capability-only.ts). The client
+    // that hosts the session applies the answer below; the marker is the one a spawned agent
+    // carries, so anything in the session that asks finds the same name.
+    const capabilityOnly = await outsideSessionCapabilityOnly({ agent, outsidePlanRef: planRef });
+    if (capabilityOnly) envelopeEnv[CAPABILITY_ONLY_ENV] = '1';
 
     // pot-seat-pools-prose-ux-2026-07-18 P-007/P-013/P-014: only the AUTO-OFF
     // routing-gate text reads this (a human is present to be asked A/B/C), so
@@ -3530,6 +3543,7 @@ export const bootstrapSu = defineTool({
       planSlug,
       promptFile,
       ...(planRef !== null ? { outsidePlanRef: planRef } : {}),
+      ...(capabilityOnly ? { capabilityOnly } : {}),
       instructionLint,
       specificationRevision: launchArtifact.specificationRevision,
       stateRevision: launchArtifact.stateRevision,

@@ -237,7 +237,7 @@ export class ManagedAgent {
     }
     Object.assign(env,this.operator.envelope,{PAPERCUSP_SID:record.owner, PAPERCUSP_ADV_SESSION_ID:String(record.adv),
       PAPERCUSP_NATIVE_SESSION_ID:record.native, PAPERCUSP_WORKSPACE:record.workspace,
-      PAPERCUSP_OPERATOR_URL:this.config.operatorUrl, PAPERCUSP_TOOLS:this.operator.tools().join(','),
+      PAPERCUSP_OPERATOR_URL:this.config.operatorUrl, PAPERCUSP_TOOLS:this.operator.tools(record).join(','),
       PAPERCUSP_CLAUDE_SYSTEM_PROMPT_MANAGED:'1', PSU_ACP_SESSION_ID:record.id});
     if (this.operator.member) env.PAPERCUSP_ADMISSION_CONTEXT=JSON.stringify(this.operator.member.admission);
     if (this.effort !== 'default') env.CLAUDE_CODE_EFFORT_LEVEL = this.effort;
@@ -247,6 +247,18 @@ export class ManagedAgent {
     // Read at each native start, so a reinstall of the hooks reaches the next one.
     if (this.config.hooks) options.hooks = sdkHooks(await loadHooks(this.config.hooks),() => env);
     for (const key of ['betas','debug','agents','plugins']) if (clientOptions[key] !== undefined) options[key] = clientOptions[key];
+    // A session the operator launched capability-only (operator.mjs `capabilityOnlyTerms`)
+    // changes files and runs commands through Papercusp's own tools and nothing else. Its file
+    // tools take the file's lock in the same call as the write, and its shell is the one
+    // Papercusp accounts for. Claude Code's own are withdrawn here, at every native start, so the
+    // session cannot fall back on them out of habit; what stands in for them is in its seed
+    // (`Operator.tools`). The same marker goes into the session's environment as a spawned
+    // agent carries, for a carry or a resume, whose launch answer is not asked for again.
+    const withdrawn = record.capabilityOnly?.withdrawnNativeTools;
+    if (withdrawn) env.PAPERCUSP_FLEET_CAPABILITY_ONLY = '1';
+    if (withdrawn || clientOptions.disallowedTools !== undefined) {
+      options.disallowedTools = [...new Set([...(clientOptions.disallowedTools || []), ...(withdrawn || [])])];
+    }
     const prompts = [await readFile(record.promptFile,'utf8')];
     // The supervised Claude launcher layers its governed fleet brief as a second
     // system-prompt file. The bootstrap's base prompt contains only the persona.

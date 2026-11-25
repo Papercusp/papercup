@@ -52,6 +52,20 @@ export async function loadConfig(path) {
     stateDir: resolve(root, config.stateDir || join(homedir(), '.local', 'state', 'psu-acp')) };
 }
 
+// The operator's capability-only terms for a session (`capabilityOnly` in its launch answer): the
+// tools of Claude Code to withdraw and the Papercusp tools that stand in for them. Checked here
+// because both lists go straight into the native launch: one into its withdrawn tools, the other
+// into the session's tool server.
+export function capabilityOnlyTerms(value) {
+  if (value === undefined || value === null) return undefined;
+  const named = (list, pattern) => Array.isArray(list) && list.length > 0
+    && list.every(name => typeof name === 'string' && pattern.test(name));
+  if (!named(value.withdrawnNativeTools, /^[A-Za-z]\w*$/) || !named(value.tools, /^[\w.-]+:[\w.-]+$/)) {
+    throw new Error('Invalid capability-only launch terms');
+  }
+  return {withdrawnNativeTools:[...value.withdrawnNativeTools], tools:[...value.tools]};
+}
+
 export class Operator {
   constructor(config,member) { this.config = config; this.member=member; }
 
@@ -59,8 +73,13 @@ export class Operator {
   // given the member's own (`memberTools`) where the config names them: a member pulls, builds
   // and closes work-items, and has no use for the tools that file work, launch a fleet or
   // search the catalog. Every other session, and a member with no list of its own, gets `tools`.
-  tools() {
-    return (this.member && this.config.memberTools) || this.config.tools;
+  // A session the operator launched capability-only is given the tools that stand in for the
+  // ones it loses as well, whatever the config lists: a tool is never withdrawn with nothing in
+  // its place.
+  tools(record) {
+    const seed = (this.member && this.config.memberTools) || this.config.tools;
+    const standIns = record?.capabilityOnly?.tools;
+    return standIns ? [...new Set([...seed, ...standIns])] : seed;
   }
 
   async token() {
@@ -130,9 +149,12 @@ export class Operator {
       // The operator owns Papercusp identity. The client owns its Claude home, credentials and telemetry.
       this.envelope=Object.fromEntries(Object.entries(boot.envelopeEnv).filter(([key])=>key.startsWith('PAPERCUSP_')));
       this.kickoff=boot.kickoffPrompt;
+      // Kept on the session's record, so a carry and a resume start the session on the same terms.
+      const capabilityOnly=capabilityOnlyTerms(boot.capabilityOnly);
       return { adv: boot.sessionId, native: boot.nativeSessionId, owner: boot.envelopeEnv.PAPERCUSP_SID,
         workspace: boot.workspaceId, harness: boot.harnessSlug, cwd, identity, promptFile: boot.promptFile,
-        profile: boot.envelopeEnv.PAPERCUSP_PROFILE || '', id: boot.nativeSessionId, started: false };
+        profile: boot.envelopeEnv.PAPERCUSP_PROFILE || '', id: boot.nativeSessionId, started: false,
+        ...(capabilityOnly ? {capabilityOnly} : {}) };
     } catch (error) {
       await this.end({ adv: boot.sessionId }, true);
       throw error;
@@ -181,7 +203,7 @@ export class Operator {
   async server(record) {
     const url = new URL('/api/mcp', this.config.operatorUrl);
     const params = {superuser:'1', origin:'agent', workspace:record.workspace, client:record.owner,
-      native_session:record.native, profile:record.profile, tools:this.tools().join(','),
+      native_session:record.native, profile:record.profile, tools:this.tools(record).join(','),
       // Every session of this front is Claude Code's. Said here, as psu says it on its own
       // sessions' URLs: Claude loads a tool's whole definition into its prompt when the tool is
       // listed, so the operator must not widen the session's list on its own account
@@ -190,7 +212,7 @@ export class Operator {
     // A launched member's tools are delivered compact (a summary and the schema, without the
     // long guidance): its own prompt gives it the calls it makes, and the full definitions of
     // a handful of tools were most of what a member's session carried.
-    if (this.member && this.config.memberTools) params.tools_compact = this.tools().join(',');
+    if (this.member && this.config.memberTools) params.tools_compact = this.tools(record).join(',');
     url.search = new URLSearchParams(params);
     return {type:'http', name:'papercusp-su', url:String(url), headers:[
       {name:'Authorization', value:'Bearer ' + await this.token()},

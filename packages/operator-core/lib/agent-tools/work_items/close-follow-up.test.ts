@@ -123,7 +123,10 @@ describe('the fresh context for the handed item', () => {
     expect(note).toContain('You hold WI-10: AC2 polygon area');
     expect(note).toContain('Build `src/geo_polygon.py` with its tests.');
     expect(note).toContain('do not pull an item');
-    expect(note).toContain('Change files with Edit and Write only');
+    // The note names no tool: a session's own instructions say which file tools it has.
+    expect(note).toContain('Change files with your file tools only');
+    expect(note).toContain('a write through the shell is refused');
+    expect(note).not.toMatch(/\bEdit\b|\bWrite\b/);
     // The context that reads this result is about to be dropped: it gets the id, not the text.
     expect(next).toEqual({
       handed: true,

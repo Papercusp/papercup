@@ -116,8 +116,8 @@ export function itemBoundaryNote(closedIds: readonly string[], item: { id: strin
       'conversation was carried over; what you built is in the working tree.',
     `You hold ${item.id}${item.title ? `: ${item.title}` : ''}. It is already claimed for you, so do not orient again ` +
       'and do not pull an item. Build it with its tests and close it with work_items:complete, as your instructions ' +
-      'describe; that close hands you your next item. Change files with Edit and Write only: a shell write into ' +
-      'the folder is refused.',
+      'describe; that close hands you your next item. Change files with your file tools only, as your ' +
+      'instructions name them: a write through the shell is refused.',
     ...(item.summary
       ? [
           'The item, as its record states it:',
