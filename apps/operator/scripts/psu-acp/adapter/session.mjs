@@ -198,7 +198,7 @@ export class ManagedAgent {
   // A session here runs no hook, so nothing else tells it how full its context is. Each time
   // its native session reports the figure, the operator is asked for the gauge it would show
   // (its thresholds and its words), and a gauge that has reached a louder band is put in front
-  // of the session: into the turn in flight, or at the head of its next prompt.
+  // of the session: after the next tool step of a turn in flight, or with its next prompt.
   noteContext(p) {
     const used = p?.update?.sessionUpdate === 'usage_update' ? p.update.used : undefined;
     const record = this.record;
@@ -211,17 +211,16 @@ export class ManagedAgent {
       const rank = {loud:1, critical:2}[state.context?.band] || 0;
       if (gauge !== this.gauge || !state.context?.line || rank <= gauge.rank) return;
       gauge.rank = rank;
-      const turn = this.turn;
       // Where hooks run, the line is enrolled like a client's prompt: it is the system's, and a
       // session's provenance hook would otherwise take it for the owner's own words.
       const envelope = this.config.hooks ? await this.operator.turnOrigin(record,state.context.line).catch(() => null) : null;
-      const line = envelope ? envelope+'\n'+state.context.line : state.context.line;
-      if (turn?.nativeBusy && !turn.cancel && this.nativeLive) {
-        const reply = await this.inner.steer({sessionId:record.native, prompt:[{type:'text', text:line}]})
-          .catch(() => null);
-        if (reply?.outcome === 'injected') return;
-      }
-      gauge.line = line;
+      // Held for the session, never steered into its turn. A steered message interrupts the
+      // model call in flight, and the interrupted call came back as an error result that ended
+      // the session (a fleet member at 83% of its limit, mid-item). The line reaches a running
+      // turn as context after its next tool step (`gaugeHook`, registered at each native start),
+      // and a session between tool steps with its next prompt.
+      gauge.line = envelope ? envelope+'\n'+state.context.line : state.context.line;
+      gauge.plain = state.context.line;
     }).catch(() => {}).finally(() => { gauge.asking = false; });
   }
 
@@ -246,6 +245,17 @@ export class ManagedAgent {
     // Papercusp's own hooks, registered as this host's (hooks.mjs), where the config names their file.
     // Read at each native start, so a reinstall of the hooks reaches the next one.
     if (this.config.hooks) options.hooks = sdkHooks(await loadHooks(this.config.hooks),() => env);
+    // The context gauge, given to a running turn as context after a tool step (`noteContext`).
+    // This front's own hook, registered whether or not Papercusp's are: it is how the session
+    // hears how full its context is while it works.
+    const gaugeHook = async () => {
+      const said = this.gauge?.plain;
+      if (!said) return {};
+      this.gauge.line = null;
+      this.gauge.plain = null;
+      return {hookSpecificOutput:{hookEventName:'PostToolBatch',additionalContext:said}};
+    };
+    options.hooks = {...options.hooks, PostToolBatch:[...(options.hooks?.PostToolBatch || []),{hooks:[gaugeHook]}]};
     for (const key of ['betas','debug','agents','plugins']) if (clientOptions[key] !== undefined) options[key] = clientOptions[key];
     // A session the operator launched capability-only (operator.mjs `capabilityOnlyTerms`)
     // changes files and runs commands through Papercusp's own tools and nothing else. Its file
@@ -323,7 +333,7 @@ export class ManagedAgent {
         // A gauge reached while no turn was running goes with this prompt, after its own blocks: an
         // enrolled prompt's envelope has to stay at its head.
         const tail = this.gauge?.line ? [{type:'text', text:this.gauge.line}] : [];
-        if (this.gauge) this.gauge.line = null;
+        if (this.gauge) { this.gauge.line = null; this.gauge.plain = null; }
         try { result = foldTurn(result,await this.inner.prompt({sessionId:record.native,prompt:[...blocks,...tail]})); }
         finally { turn.nativeBusy = false; }
       };
